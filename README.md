@@ -2,7 +2,7 @@
 
 MuJoCo에서 조립 작업을 계획·실행·검증하고, 성공과 실패 경험을 재사용하는 LLM 기반 로봇 조립 졸업프로젝트.
 
-현재 단계는 **기초 낙하 장면, UR3e 모델 표시, 한 관절의 완만한 이동과 도착 판정 완료**다. 여러 관절의 협조 이동, 그리퍼, 에이전트, 실물 연결은 후속 단계다.
+현재 단계는 **기초 낙하 장면, UR3e 단일 관절 이동, 2F-85 장착과 초기 자세 유지 확인 완료**다. 그리퍼 개폐·파지, 여러 관절의 협조 이동, 에이전트, 실물 연결은 후속 단계다.
 
 개발 경로는 `C:\dev\llm-robot-assembly`이며, GitHub 저장소는 [ramen0519/llm-robot-assembly](https://github.com/ramen0519/llm-robot-assembly)다.
 
@@ -29,6 +29,7 @@ MuJoCo에서 조립 작업을 계획·실행·검증하고, 성공과 실패 경
 - [x] 기초 장면: 공 낙하, 바닥 접촉, 안정 상태 검사와 뷰어 실행
 - [x] M1 일부: UR3e 로봇팔 모델 로딩과 정지 자세 표시
 - [x] M1 일부: 첫 관절의 완만한 목표값 변경과 실제 각도·속도 기반 도착 판정
+- [x] M1 일부: Robotiq 2F-85 결합과 열린 상태의 초기 자세 유지
 - [ ] M1: 로봇·그리퍼·작업대를 로드하고 관절 제어와 상태 읽기
 - [ ] M2: 기존 IK 기능, 제한된 이동 경로, 충돌·관절 한계 검사
 - [ ] M3: 한 부품의 물리적인 집기·배치·삽입과 결과 판정
@@ -59,6 +60,7 @@ MuJoCo 기본 환경은 아래 버전으로 설치·확인했다. IK 후보는 m
 - [2단계: 바닥과 공의 중력·충돌 확인](docs/STEP_02_FALLING_BALL.md)
 - [3단계: UR3e 모델 불러오기](docs/STEP_03_UR3E_MODEL.md)
 - [4단계: UR3e 관절 하나 움직이고 도착 확인하기](docs/STEP_04_ONE_JOINT.md)
+- [5단계: Robotiq 2F-85 장착과 초기 자세 유지](docs/STEP_05_GRIPPER_MOUNT.md)
 - [전체 개발 계획](docs/PROJECT_PLAN.md)
 - [입문 설명서](docs/BEGINNER_GUIDE.md)
 - [개발 작업 지침](AGENTS.md)
@@ -146,3 +148,12 @@ uv run --locked python scripts/move_one_joint.py --headless
 ```
 
 마지막 0.5초 동안 각도 오차 0.5도 이하와 속도 0.5도/초 미만을 확인한다. 실제 검증에서는 최종 -60.000016도, 최대 이동 속도 11.140780도/초였고 예상치 못한 접촉·관절 한계 초과·엔진 경고가 없었다. 다른 관절은 같은 목표를 유지하지만 중력과 동역학으로 최대 0.725444도 변했다. 측정 기록은 Git에서 제외된 `runs/step04/one_joint.csv`에 저장된다. 판정 기준과 설명은 [4단계 문서](docs/STEP_04_ONE_JOINT.md)를 참고한다.
+
+UR3e에 2F-85를 장착하고 열린 상태로 5초간 자세를 유지한다.
+
+```powershell
+uv run --locked python scripts/view_ur3e_gripper.py
+uv run --locked python scripts/view_ur3e_gripper.py --check
+```
+
+팔 6개와 그리퍼 8개의 물리 관절, 총 7개의 제어 입력을 확인했다. 그리퍼 무게를 포함한 5초 유지 검사에서 팔의 최대 각도 변화는 약 1.07도였고 예상치 못한 접촉이나 엔진 경고가 없었다. 개폐·파지는 후속 단계다. 기존 팔 단독 예제는 그대로 유지한다. 결합 방법과 검사 기준은 [5단계 설명서](docs/STEP_05_GRIPPER_MOUNT.md)를 참고한다.
