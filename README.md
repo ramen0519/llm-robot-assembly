@@ -2,7 +2,7 @@
 
 MuJoCo에서 조립 작업을 계획·실행·검증하고, 성공과 실패 경험을 재사용하는 LLM 기반 로봇 조립 졸업프로젝트.
 
-현재 단계는 **설계 및 저장소 준비**다. 실행 가능한 시뮬레이터, 에이전트, 실물 제어 코드는 아직 구현하지 않았다.
+현재 단계는 **프로젝트 전용 Python 환경 구성 및 MuJoCo import 확인 완료**다. 3D 장면, 로봇 제어, 에이전트, 실물 연결은 아직 구현하지 않았다.
 
 개발 경로는 `C:\dev\llm-robot-assembly`이며, GitHub 저장소는 [ramen0519/llm-robot-assembly](https://github.com/ramen0519/llm-robot-assembly)다.
 
@@ -25,6 +25,7 @@ MuJoCo에서 조립 작업을 계획·실행·검증하고, 성공과 실패 경
 
 ## 개발 순서
 
+- [x] 준비: Python 전용 환경과 MuJoCo 설치·import 확인
 - [ ] M1: 로봇·그리퍼·작업대를 로드하고 관절 제어와 상태 읽기
 - [ ] M2: 기존 IK 기능, 제한된 이동 경로, 충돌·관절 한계 검사
 - [ ] M3: 한 부품의 물리적인 집기·배치·삽입과 결과 판정
@@ -47,10 +48,11 @@ MuJoCo에서 조립 작업을 계획·실행·검증하고, 성공과 실패 경
 | 결과 판정 | 측정 가능한 조건으로 단계·전체 조립 성공 판정 |
 | 메모리·로그 | 적용 조건과 결과, 실패, 시간, API 사용량 저장 |
 
-IK 후보는 mink이며, 필요해지면 OMPL 또는 기존 MoveIt 구성을 검토한다. 라이브러리와 버전은 첫 모델 실행을 확인한 뒤 고정한다. 현재 설치를 완료한 상태는 아니다.
+MuJoCo 기본 환경은 아래 버전으로 설치·확인했다. IK 후보는 mink이며, 필요해지면 OMPL 또는 기존 MoveIt 구성을 검토한다. IK와 모션 라이브러리는 해당 구현 단계에서 호환성을 확인한 뒤 추가한다.
 
 ## 문서
 
+- [1단계: Python 환경과 MuJoCo 설치 설명](docs/STEP_01_ENVIRONMENT.md)
 - [전체 개발 계획](docs/PROJECT_PLAN.md)
 - [입문 설명서](docs/BEGINNER_GUIDE.md)
 - [개발 작업 지침](AGENTS.md)
@@ -69,4 +71,30 @@ IK 후보는 mink이며, 필요해지면 OMPL 또는 기존 MoveIt 구성을 검
 
 ## 실행 환경
 
-개발 GPU는 사용자 설명 기준 RTX 4070 SUPER급이다. CPU·RAM·정확한 OS와 Python 버전은 아직 고정하지 않았다. M1 구현 시 실제 실행 환경과 설치·실행 명령을 이 문서에 추가한다.
+2026-10-26 현재 작업 PC에서 확인한 환경:
+
+- Windows, Python 3.11.15, uv 0.11.32.
+- MuJoCo 3.17.0. 직접 의존성은 `pyproject.toml`, 전체 해결된 패키지 버전은 `uv.lock`에 기록.
+- Intel Iris Xe Graphics, RAM 약 16GB. 사용자가 별도로 언급한 RTX 4070 SUPER급 PC에서의 실행은 아직 확인하지 않았다.
+- 프로젝트 전용 환경: `C:\dev\llm-robot-assembly\.venv` (Git 제외).
+
+PowerShell에서 설치 상태를 다시 확인한다.
+
+```powershell
+cd C:\dev\llm-robot-assembly
+uv run --locked python scripts/check_environment.py
+```
+
+확인된 핵심 출력:
+
+```text
+Python: 3.11.15
+Virtual environment: True
+MuJoCo package: 3.17.0
+MuJoCo engine: 3.17.0
+MuJoCo import: OK
+```
+
+설정 파일만 받은 다른 컴퓨터에서는 uv가 준비된 상태에서 `uv sync --locked`로 환경을 만든다. Python 3.11 계열을 사용하며 세부 패치 버전과 실행 경로는 컴퓨터에 따라 다를 수 있다. `.venv`를 복사해서 옮기지 않는다.
+
+현재 통과한 검사는 MuJoCo import, 내부 엔진 버전 조회, 의존성 검사다. 3D 뷰어·GPU 렌더링·물리 시뮬레이션·로봇 모델 호환성은 다음 단계에서 각각 확인한다. 자세한 원리와 명령어는 [1단계 설명서](docs/STEP_01_ENVIRONMENT.md)를 참고한다.
