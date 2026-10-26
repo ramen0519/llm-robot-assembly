@@ -1,0 +1,33 @@
+<mujoco model="falling_ball">
+  <!-- Units used here: metres, kilograms, seconds. -->
+  <option timestep="0.002" gravity="0 0 -9.81" integrator="implicitfast"/>
+
+  <!-- Faster contact response than the default; keep the 2 ms timestep. -->
+  <default>
+    <geom solref="0.008 1"/>
+  </default>
+
+  <visual>
+    <global offwidth="960" offheight="720"/>
+  </visual>
+
+  <asset>
+    <texture name="floor_grid" type="2d" builtin="checker"
+             rgb1="0.20 0.25 0.30" rgb2="0.28 0.34 0.40" width="256" height="256"/>
+    <material name="floor_material" texture="floor_grid" texrepeat="4 4"
+              reflectance="0.1"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 -1 2" dir="0 0 -1"/>
+    <!-- A geom directly in worldbody stays fixed. -->
+    <geom name="floor" type="plane" size="1 1 0.1" material="floor_material"/>
+
+    <body name="ball" pos="0 0 0.6">
+      <!-- Six degrees of freedom: translation and rotation. -->
+      <freejoint name="ball_free"/>
+      <geom name="ball_geom" type="sphere" size="0.05" mass="0.1"
+            rgba="1 0.38 0.10 1"/>
+    </body>
+  </worldbody>
+</mujoco>

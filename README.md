@@ -2,7 +2,7 @@
 
 MuJoCo에서 조립 작업을 계획·실행·검증하고, 성공과 실패 경험을 재사용하는 LLM 기반 로봇 조립 졸업프로젝트.
 
-현재 단계는 **프로젝트 전용 Python 환경 구성 및 MuJoCo import 확인 완료**다. 3D 장면, 로봇 제어, 에이전트, 실물 연결은 아직 구현하지 않았다.
+현재 단계는 **바닥과 공의 낙하 장면, 중력·접촉·안정 검사, 3D 뷰어 실행 확인 완료**다. 로봇 모델·제어, 에이전트, 실물 연결은 후속 단계다.
 
 개발 경로는 `C:\dev\llm-robot-assembly`이며, GitHub 저장소는 [ramen0519/llm-robot-assembly](https://github.com/ramen0519/llm-robot-assembly)다.
 
@@ -26,6 +26,7 @@ MuJoCo에서 조립 작업을 계획·실행·검증하고, 성공과 실패 경
 ## 개발 순서
 
 - [x] 준비: Python 전용 환경과 MuJoCo 설치·import 확인
+- [x] 기초 장면: 공 낙하, 바닥 접촉, 안정 상태 검사와 뷰어 실행
 - [ ] M1: 로봇·그리퍼·작업대를 로드하고 관절 제어와 상태 읽기
 - [ ] M2: 기존 IK 기능, 제한된 이동 경로, 충돌·관절 한계 검사
 - [ ] M3: 한 부품의 물리적인 집기·배치·삽입과 결과 판정
@@ -53,6 +54,7 @@ MuJoCo 기본 환경은 아래 버전으로 설치·확인했다. IK 후보는 m
 ## 문서
 
 - [1단계: Python 환경과 MuJoCo 설치 설명](docs/STEP_01_ENVIRONMENT.md)
+- [2단계: 바닥과 공의 중력·충돌 확인](docs/STEP_02_FALLING_BALL.md)
 - [전체 개발 계획](docs/PROJECT_PLAN.md)
 - [입문 설명서](docs/BEGINNER_GUIDE.md)
 - [개발 작업 지침](AGENTS.md)
@@ -97,4 +99,18 @@ MuJoCo import: OK
 
 설정 파일만 받은 다른 컴퓨터에서는 uv가 준비된 상태에서 `uv sync --locked`로 환경을 만든다. Python 3.11 계열을 사용하며 세부 패치 버전과 실행 경로는 컴퓨터에 따라 다를 수 있다. `.venv`를 복사해서 옮기지 않는다.
 
-현재 통과한 검사는 MuJoCo import, 내부 엔진 버전 조회, 의존성 검사다. 3D 뷰어·GPU 렌더링·물리 시뮬레이션·로봇 모델 호환성은 다음 단계에서 각각 확인한다. 자세한 원리와 명령어는 [1단계 설명서](docs/STEP_01_ENVIRONMENT.md)를 참고한다.
+기본 환경의 import·내부 엔진 버전·의존성 검사에 더해, 아래의 작은 장면에서 물리 계산과 렌더링·뷰어 실행을 확인했다. 로봇 모델 호환성은 아직 검증하지 않았다. 환경 구성은 [1단계 설명서](docs/STEP_01_ENVIRONMENT.md)를 참고한다.
+
+바닥과 공의 낙하 장면을 실행한다. 3초짜리 실험을 반복하며 창을 닫으면 종료된다.
+
+```powershell
+uv run --locked python scripts/drop_ball.py
+```
+
+창 없이 중력·접촉·안정 상태를 수치로 확인한다.
+
+```powershell
+uv run --locked python scripts/check_drop.py
+```
+
+공은 약 0.334초에 바닥과 접촉했고, 최종 중심 높이 0.049930m에서 안정됐다. 네 가지 수치 검사와 8초 제한 뷰어 실행을 확인했다. 접촉 모델은 작은 겹침을 허용하며, 정밀 조립 성능을 확인한 결과는 아니다. 설정·코드·판정 기준은 [2단계 설명서](docs/STEP_02_FALLING_BALL.md)를 참고한다.
