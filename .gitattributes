@@ -14,3 +14,8 @@
 *.mp4 binary
 *.pptx binary
 *.pdf binary
+
+# Preserve upstream model bytes and keep large mesh diffs compact.
+models/universal_robots_ur3e/** -text
+models/universal_robots_ur3e/assets/*.obj binary
+models/universal_robots_ur3e/PROVENANCE.md text eol=lf

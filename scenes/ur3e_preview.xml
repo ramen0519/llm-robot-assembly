@@ -1,0 +1,23 @@
+<mujoco model="ur3e_preview">
+  <include file="../models/universal_robots_ur3e/ur3e.xml"/>
+
+  <!-- Resolve mesh files relative to this scene, not the upstream model folder. -->
+  <compiler meshdir="../models/universal_robots_ur3e/assets/"/>
+
+  <visual>
+    <global offwidth="960" offheight="720"/>
+    <headlight ambient="0.3 0.3 0.3" diffuse="0.7 0.7 0.7"/>
+  </visual>
+
+  <asset>
+    <texture name="preview_floor_grid" type="2d" builtin="checker"
+             rgb1="0.25 0.30 0.35" rgb2="0.35 0.40 0.45" width="256" height="256"/>
+    <material name="preview_floor_material" texture="preview_floor_grid"
+              texrepeat="4 4"/>
+  </asset>
+
+  <worldbody>
+    <geom name="preview_floor" type="plane" size="1 1 0.1"
+          material="preview_floor_material"/>
+  </worldbody>
+</mujoco>
