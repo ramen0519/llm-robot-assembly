@@ -30,3 +30,14 @@
 - Validate the behavior changed; for robot dynamics, use real simulator runs as well as code checks.
 - Use `codex/` for new work branches. Keep `main` suitable for sharing and reproducible milestones.
 - Explain changes and remaining limitations in Korean for the user.
+
+## Guided development workflow
+
+- This is the user's graduation project. Help the user understand and explain the work, assuming little prior robotics experience.
+- Work on one small, coherent module or learning milestone at a time. Do not implement several modules in one turn unless the user explicitly requests it.
+- Before making changes, explain the module's purpose, why it is needed, the files or tools involved, and a concrete success criterion in plain Korean.
+- Explain meaningful commands, installations, dependency choices, code changes, and validation results as the work proceeds. Define unfamiliar terms when first used.
+- After each increment, explain the relevant code and data flow, give the exact run command and expected result, and distinguish verified behavior from remaining limitations. For documentation-only changes, explain the changed guidance instead of inventing a run command.
+- Keep explanations tied to the actual files and behavior so the user can later modify and present the project themselves.
+- Finish the current increment and its explanation, then wait for the user's questions or instruction to continue before starting the next module. Do not demand a separate approval for every routine command within the agreed increment.
+- Keep each implementation increment reviewable and suitable for a focused commit; do not bundle unrelated work.
