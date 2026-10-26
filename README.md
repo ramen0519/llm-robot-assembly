@@ -2,7 +2,7 @@
 
 MuJoCo에서 조립 작업을 계획·실행·검증하고, 성공과 실패 경험을 재사용하는 LLM 기반 로봇 조립 졸업프로젝트.
 
-현재 단계는 **기초 낙하 장면 검증과 UR3e 모델의 정지 자세 표시 완료**다. 로봇 관절 제어, 그리퍼, 에이전트, 실물 연결은 후속 단계다.
+현재 단계는 **기초 낙하 장면, UR3e 모델 표시, 한 관절의 완만한 이동과 도착 판정 완료**다. 여러 관절의 협조 이동, 그리퍼, 에이전트, 실물 연결은 후속 단계다.
 
 개발 경로는 `C:\dev\llm-robot-assembly`이며, GitHub 저장소는 [ramen0519/llm-robot-assembly](https://github.com/ramen0519/llm-robot-assembly)다.
 
@@ -28,6 +28,7 @@ MuJoCo에서 조립 작업을 계획·실행·검증하고, 성공과 실패 경
 - [x] 준비: Python 전용 환경과 MuJoCo 설치·import 확인
 - [x] 기초 장면: 공 낙하, 바닥 접촉, 안정 상태 검사와 뷰어 실행
 - [x] M1 일부: UR3e 로봇팔 모델 로딩과 정지 자세 표시
+- [x] M1 일부: 첫 관절의 완만한 목표값 변경과 실제 각도·속도 기반 도착 판정
 - [ ] M1: 로봇·그리퍼·작업대를 로드하고 관절 제어와 상태 읽기
 - [ ] M2: 기존 IK 기능, 제한된 이동 경로, 충돌·관절 한계 검사
 - [ ] M3: 한 부품의 물리적인 집기·배치·삽입과 결과 판정
@@ -57,6 +58,7 @@ MuJoCo 기본 환경은 아래 버전으로 설치·확인했다. IK 후보는 m
 - [1단계: Python 환경과 MuJoCo 설치 설명](docs/STEP_01_ENVIRONMENT.md)
 - [2단계: 바닥과 공의 중력·충돌 확인](docs/STEP_02_FALLING_BALL.md)
 - [3단계: UR3e 모델 불러오기](docs/STEP_03_UR3E_MODEL.md)
+- [4단계: UR3e 관절 하나 움직이고 도착 확인하기](docs/STEP_04_ONE_JOINT.md)
 - [전체 개발 계획](docs/PROJECT_PLAN.md)
 - [입문 설명서](docs/BEGINNER_GUIDE.md)
 - [개발 작업 지침](AGENTS.md)
@@ -101,7 +103,7 @@ MuJoCo import: OK
 
 설정 파일만 받은 다른 컴퓨터에서는 uv가 준비된 상태에서 `uv sync --locked`로 환경을 만든다. Python 3.11 계열을 사용하며 세부 패치 버전과 실행 경로는 컴퓨터에 따라 다를 수 있다. `.venv`를 복사해서 옮기지 않는다.
 
-기본 환경의 import·내부 엔진 버전·의존성 검사에 더해, 아래의 작은 장면에서 물리 계산과 렌더링·뷰어 실행을 확인했다. UR3e 모델은 아래의 정지 표시까지 확인했으며, 동역학과 제어는 아직 검증하지 않았다. 환경 구성은 [1단계 설명서](docs/STEP_01_ENVIRONMENT.md)를 참고한다.
+기본 환경의 import·내부 엔진 버전·의존성 검사에 더해, 아래의 작은 장면에서 물리 계산과 렌더링·뷰어 실행을 확인했다. UR3e 모델은 정지 표시와 아래의 제한된 한 관절 이동까지 확인했다. 환경 구성은 [1단계 설명서](docs/STEP_01_ENVIRONMENT.md)를 참고한다.
 
 바닥과 공의 낙하 장면을 실행한다. 3초짜리 실험을 반복하며 창을 닫으면 종료된다.
 
@@ -129,4 +131,18 @@ uv run --locked python scripts/view_ur3e.py
 uv run --locked python scripts/view_ur3e.py --check
 ```
 
-커뮤니티 UR3e 모델의 회전 관절 6개·메시 20개 로딩, 정지 렌더링, 뷰어 정상 종료를 확인했다. 원본 라이선스와 고정 커밋은 [출처 기록](models/universal_robots_ur3e/PROVENANCE.md)에 보관한다. 자세 유지 제어·충돌 형상 정확도·그리퍼 결합·실물 보정은 아직 검증하지 않았다. 설명은 [3단계 문서](docs/STEP_03_UR3E_MODEL.md)를 참고한다.
+커뮤니티 UR3e 모델의 회전 관절 6개·메시 20개 로딩, 정지 렌더링, 뷰어 정상 종료를 확인했다. 원본 라이선스와 고정 커밋은 [출처 기록](models/universal_robots_ur3e/PROVENANCE.md)에 보관한다. 범용 자세 유지 성능·충돌 형상 정확도·그리퍼 결합·실물 보정은 아직 검증하지 않았다. 설명은 [3단계 문서](docs/STEP_03_UR3E_MODEL.md)를 참고한다.
+
+첫 관절을 약 -90도에서 -60도로 천천히 움직이고 도착을 확인한다. 초기 유지 1초, 목표 변경 4초, 안정화 2초 후 창이 닫힌다.
+
+```powershell
+uv run --locked python scripts/move_one_joint.py
+```
+
+창 없이 같은 물리 계산과 판정을 실행한다.
+
+```powershell
+uv run --locked python scripts/move_one_joint.py --headless
+```
+
+마지막 0.5초 동안 각도 오차 0.5도 이하와 속도 0.5도/초 미만을 확인한다. 실제 검증에서는 최종 -60.000016도, 최대 이동 속도 11.140780도/초였고 예상치 못한 접촉·관절 한계 초과·엔진 경고가 없었다. 다른 관절은 같은 목표를 유지하지만 중력과 동역학으로 최대 0.725444도 변했다. 측정 기록은 Git에서 제외된 `runs/step04/one_joint.csv`에 저장된다. 판정 기준과 설명은 [4단계 문서](docs/STEP_04_ONE_JOINT.md)를 참고한다.
