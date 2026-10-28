@@ -69,6 +69,7 @@ MuJoCo 3.17.0과 mink 1.3.0으로 가까운 TCP 목표의 IK 계산과 모터를
 - [7단계: TCP 위치·방향과 좌표축 확인](docs/STEP_07_TCP_FRAME.md)
 - [8단계: TCP 목표에서 관절 각도 계산하기 — IK](docs/STEP_08_TCP_IK.md)
 - [9단계: IK 결과로 천천히 이동하고 실제 TCP 도착 확인](docs/STEP_09_TCP_MOTION.md)
+- [실패 상황과 Fallback 설계 — 자동 복구 미구현](docs/FAILURE_RECOVERY_DESIGN.md)
 - [전체 개발 계획](docs/PROJECT_PLAN.md)
 - [입문 설명서](docs/BEGINNER_GUIDE.md)
 - [개발 작업 지침](AGENTS.md)

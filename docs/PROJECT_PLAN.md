@@ -168,7 +168,7 @@ class SimulationAdapter(EnvironmentAdapter):
 
 각 스킬은 내부적으로 이동·그리퍼·관측을 조합한다. 물리 시뮬레이션 step이나 로봇 제어 주기마다 LLM을 호출하지 않는다. `insert`는 성공을 보장하는 함수가 아니라 실제 제어를 수행하고 결과를 보고하는 스킬이다.
 
-실패 코드 초안: `INVALID_PLAN`, `PRECONDITION_FAILED`, `UNREACHABLE`, `COLLISION`, `GRASP_FAILED`, `MISALIGNED`, `INSERTION_INCOMPLETE`, `OBSERVATION_UNCERTAIN`, `TIMEOUT`, `EXECUTION_UNKNOWN`, `BUDGET_EXCEEDED`.
+실패 분류·관측 증거·허용 대응·시험 사례는 [실패 상황과 Fallback 설계 v0.1](FAILURE_RECOVERY_DESIGN.md)에 구체화했다. 기존 초안의 `UNREACHABLE`은 수치 IK 실패와 구분해 `IK_NOT_CONVERGED`로 보고하고, 계획 후보의 접촉(`PLANNED_CONTACT`)과 실행 중 접촉(`UNEXPECTED_CONTACT`)도 분리한다. 미도달·미안정·모션 제한 위반·관측 불확실·실행 여부 미확인을 별도로 다룬다. 공통 코드·보고서와 자동 복구는 아직 미구현이며, 현재 검출기와 중단 동작부터 구조화하는 것을 다음 작은 단계로 둔다.
 
 하나의 실패에 원인이 확정되지 않을 수 있다. 예를 들어 삽입 깊이 부족은 관측 사실이고, 마찰이 원인이라는 설명은 가설이다. 에이전트가 제안한 원인과 관측 사실을 구분해서 저장한다.
 
