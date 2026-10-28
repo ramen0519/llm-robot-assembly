@@ -2,7 +2,7 @@
 
 MuJoCo에서 조립 작업을 계획·실행·검증하고, 성공과 실패 경험을 재사용하는 LLM 기반 로봇 조립 졸업프로젝트.
 
-현재 단계는 **기초 낙하 장면, UR3e 단일 관절 이동, 2F-85 장착과 초기 자세 유지 확인 완료**다. 그리퍼 개폐·파지, 여러 관절의 협조 이동, 에이전트, 실물 연결은 후속 단계다.
+현재 단계는 **기초 낙하 장면, UR3e 단일 관절 이동, 2F-85 장착·자세 유지·빈 상태의 개폐 확인 완료**다. 물체 파지, 여러 관절의 협조 이동, 에이전트, 실물 연결은 후속 단계다.
 
 개발 경로는 `C:\dev\llm-robot-assembly`이며, GitHub 저장소는 [ramen0519/llm-robot-assembly](https://github.com/ramen0519/llm-robot-assembly)다.
 
@@ -30,6 +30,7 @@ MuJoCo에서 조립 작업을 계획·실행·검증하고, 성공과 실패 경
 - [x] M1 일부: UR3e 로봇팔 모델 로딩과 정지 자세 표시
 - [x] M1 일부: 첫 관절의 완만한 목표값 변경과 실제 각도·속도 기반 도착 판정
 - [x] M1 일부: Robotiq 2F-85 결합과 열린 상태의 초기 자세 유지
+- [x] M1 일부: 그리퍼의 완만한 개폐와 실제 패드 간격·속도 기반 완료 판정
 - [ ] M1: 로봇·그리퍼·작업대를 로드하고 관절 제어와 상태 읽기
 - [ ] M2: 기존 IK 기능, 제한된 이동 경로, 충돌·관절 한계 검사
 - [ ] M3: 한 부품의 물리적인 집기·배치·삽입과 결과 판정
@@ -61,6 +62,7 @@ MuJoCo 기본 환경은 아래 버전으로 설치·확인했다. IK 후보는 m
 - [3단계: UR3e 모델 불러오기](docs/STEP_03_UR3E_MODEL.md)
 - [4단계: UR3e 관절 하나 움직이고 도착 확인하기](docs/STEP_04_ONE_JOINT.md)
 - [5단계: Robotiq 2F-85 장착과 초기 자세 유지](docs/STEP_05_GRIPPER_MOUNT.md)
+- [6단계: 그리퍼를 닫고 다시 열며 실제 상태 확인](docs/STEP_06_GRIPPER_CONTROL.md)
 - [전체 개발 계획](docs/PROJECT_PLAN.md)
 - [입문 설명서](docs/BEGINNER_GUIDE.md)
 - [개발 작업 지침](AGENTS.md)
@@ -133,7 +135,7 @@ uv run --locked python scripts/view_ur3e.py
 uv run --locked python scripts/view_ur3e.py --check
 ```
 
-커뮤니티 UR3e 모델의 회전 관절 6개·메시 20개 로딩, 정지 렌더링, 뷰어 정상 종료를 확인했다. 원본 라이선스와 고정 커밋은 [출처 기록](models/universal_robots_ur3e/PROVENANCE.md)에 보관한다. 범용 자세 유지 성능·충돌 형상 정확도·그리퍼 결합·실물 보정은 아직 검증하지 않았다. 설명은 [3단계 문서](docs/STEP_03_UR3E_MODEL.md)를 참고한다.
+커뮤니티 UR3e 모델의 회전 관절 6개·메시 20개 로딩, 정지 렌더링, 뷰어 정상 종료를 확인했다. 원본 라이선스와 고정 커밋은 [출처 기록](models/universal_robots_ur3e/PROVENANCE.md)에 보관한다. 이 팔 단독 예제는 범용 자세 유지 성능·충돌 형상 정확도·실물 보정을 검증하지 않는다. 그리퍼 결합·개폐는 아래의 별도 예제에서 확인한다. 설명은 [3단계 문서](docs/STEP_03_UR3E_MODEL.md)를 참고한다.
 
 첫 관절을 약 -90도에서 -60도로 천천히 움직이고 도착을 확인한다. 초기 유지 1초, 목표 변경 4초, 안정화 2초 후 창이 닫힌다.
 
@@ -156,4 +158,19 @@ uv run --locked python scripts/view_ur3e_gripper.py
 uv run --locked python scripts/view_ur3e_gripper.py --check
 ```
 
-팔 6개와 그리퍼 8개의 물리 관절, 총 7개의 제어 입력을 확인했다. 그리퍼 무게를 포함한 5초 유지 검사에서 팔의 최대 각도 변화는 약 1.07도였고 예상치 못한 접촉이나 엔진 경고가 없었다. 개폐·파지는 후속 단계다. 기존 팔 단독 예제는 그대로 유지한다. 결합 방법과 검사 기준은 [5단계 설명서](docs/STEP_05_GRIPPER_MOUNT.md)를 참고한다.
+팔 6개와 그리퍼 8개의 물리 관절, 총 7개의 제어 입력을 확인했다. 그리퍼 무게를 포함한 5초 유지 검사에서 팔의 최대 각도 변화는 약 1.07도였고 예상치 못한 접촉이나 엔진 경고가 없었다. 이 예제는 열린 상태의 유지 검사다. 개폐는 아래 6단계에서 확인하고 물체 파지는 후속 단계다. 기존 팔 단독 예제는 그대로 유지한다. 결합 방법과 검사 기준은 [5단계 설명서](docs/STEP_05_GRIPPER_MOUNT.md)를 참고한다.
+
+그리퍼를 4초 동안 천천히 닫고, 잠시 유지한 뒤 다시 연다. 총 13초 후 실제 상태를 판정한다.
+
+```powershell
+uv run --locked python scripts/move_gripper.py
+uv run --locked python scripts/move_gripper.py --headless
+```
+
+`Gripper open/close: PASS`가 출력되면 두 패드 구간의 닫힘·재열림, 마지막 0.5초의 안정 상태와 경로 중 검사 기준을 통과한 것이다. 열린 간격은 약 85.12mm, 닫힘 유지 구간의 가장 큰 간격은 약 0.825mm였다. 예상한 손가락 패드끼리의 접촉만 허용한다. 물체를 잡는 동작은 아직 구현하지 않았다. 측정값은 Git 제외 경로 `runs/step06/gripper_cycle.csv`에 매번 덮어쓴다. 설명과 실제 검증 범위는 [6단계 문서](docs/STEP_06_GRIPPER_CONTROL.md)를 참고한다.
+
+닫히지 않는 동작·미완료 기록·바닥 충돌을 성공으로 오인하지 않는 회귀검사도 실행할 수 있다.
+
+```powershell
+uv run --locked python -m unittest discover -s tests -v
+```

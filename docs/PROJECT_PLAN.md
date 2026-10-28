@@ -10,7 +10,7 @@
 
 **개발 순서는 MuJoCo 시뮬레이션을 먼저 완성하고, 그다음 실물 로봇을 연결하는 것으로 정한다.** 사용자는 새로 구축하는 상황이며 재사용 가능한 코드가 확보됐다고 가정하지 않는다. 연구실 선배들의 발표자료는 사용자가 직접 구현한 결과가 아니다. 해당 자료에는 UR3e·Robotiq 2F-85, MoveIt·URSim·RViz와 후반의 RoboDK 구성이 명시되어 있다. 소스 확보 시 재사용 가능성을 검토한다. 실제 로봇 제어기·소프트웨어 버전, 그리퍼 통신 연결, 카메라 모델, 정확한 투입 시간과 제출일은 아직 확인되지 않았다. UR3와 UR3e를 같은 모델로 취급하지 않는다.
 
-장비 표기 주의: 아래 UR3 표기는 초기 대화에서 사용한 명칭이다. 사용자의 후속 지시에 따라 시뮬레이션에는 UR3e 모델을 선택해 정지 표시와 제한된 한 관절 이동·도착 판정, 2F-85 장착 상태의 초기 자세 유지까지 확인했다. 실제 사용할 장비는 별도로 확인하며 UR3와 UR3e를 같은 모델로 취급하지 않는다. 모델 출처는 [3단계 설명서](STEP_03_UR3E_MODEL.md), 한 관절 제어는 [4단계 설명서](STEP_04_ONE_JOINT.md), 그리퍼 결합은 [5단계 설명서](STEP_05_GRIPPER_MOUNT.md)를 참고한다.
+장비 표기 주의: 아래 UR3 표기는 초기 대화에서 사용한 명칭이다. 사용자의 후속 지시에 따라 시뮬레이션에는 UR3e 모델을 선택해 정지 표시와 제한된 한 관절 이동·도착 판정, 2F-85 장착 상태의 초기 자세 유지와 물체 없는 개폐까지 확인했다. 실제 사용할 장비는 별도로 확인하며 UR3와 UR3e를 같은 모델로 취급하지 않는다. 모델 출처는 [3단계 설명서](STEP_03_UR3E_MODEL.md), 한 관절 제어는 [4단계 설명서](STEP_04_ONE_JOINT.md), 그리퍼 결합은 [5단계 설명서](STEP_05_GRIPPER_MOUNT.md), 개폐 제어·실제 간격 판정은 [6단계 설명서](STEP_06_GRIPPER_CONTROL.md)를 참고한다.
 
 아래 주차는 개발 시작부터의 순서를 뜻한다. Codex를 활용해 구현과 디버깅을 진행하고 기존 기구학·모션 계획 기능을 재사용한다. 첫 7–10일을 시뮬레이션 v1 완성의 목표 기간으로 제안하고, 통과 후 실물 연결·조립 검증으로 이동한다. 이는 확정 소요 시간이 아니다. 시뮬레이션에 기간을 모두 사용하지 않도록 7일차와 10일차에 진척을 점검한다. 집중 개발이 가능해도 출력·재출력, 장비 예약, 접촉 제어 검증 시간은 필요하며 10부품 실물 완성을 보장하는 일정은 아니다.
 
@@ -199,9 +199,9 @@ LangGraph의 checkpointer는 실행 thread의 상태를 보관하고 store는 �
 
 **MuJoCo에서 장면·모션·스킬을 먼저 구현하고 에이전트를 연결한다.**
 
-MuJoCo는 Python 바인딩과 viewer를 제공한다. 초기 UR3e 모델은 공개 URDF에서 변환된 커뮤니티 MJCF의 고정 버전을 사용하며, 라이선스와 출처를 함께 보관한다. 현재는 모델 로딩과 정지 표시만 확인했다. 이후 관절 축·한계·질량·충돌 형상·TCP를 검증한다. 모델을 불러오는 것만으로 구동기와 그리퍼 연결까지 완성되는 것으로 가정하지 않는다. [MuJoCo Python](https://mujoco.readthedocs.io/en/stable/python.html), [공식 UR description](https://github.com/UniversalRobots/Universal_Robots_ROS2_Description)
+MuJoCo는 Python 바인딩과 viewer를 제공한다. 초기 UR3e 모델은 공개 URDF에서 변환된 커뮤니티 MJCF의 고정 버전을 사용하며, 라이선스와 출처를 함께 보관한다. 현재는 모델 로딩, 제한된 한 관절 이동, 2F-85 결합·빈 상태 개폐를 확인했다. 검증 범위는 단계별 설명서에 기록하며, 범용 운동·파지·TCP·실물 모델 정확도 검증은 이후 수행한다. 모델을 불러오는 것만으로 구동기와 그리퍼 연결까지 완성되는 것으로 가정하지 않는다. [MuJoCo Python](https://mujoco.readthedocs.io/en/stable/python.html), [공식 UR description](https://github.com/UniversalRobots/Universal_Robots_ROS2_Description)
 
-MuJoCo Menagerie에는 2F-85 모델이 제공된다. 설치된 그리퍼의 버전과 맞는 모델, 라이선스, 장착 변환을 확인해 통합한다. 별도 공개 모델들이 존재해도 UR3+2F-85 통합 모델의 정확성이 자동 검증되는 것은 아니다. [Menagerie](https://github.com/google-deepmind/mujoco_menagerie)
+MuJoCo Menagerie의 2F-85 모델을 고정 커밋·라이선스와 함께 통합하고, 현재 초기 자세에서 장착·개폐를 검증했다. 실제 설치된 그리퍼의 버전과 장착 변환·보정은 실물 단계에서 확인한다. 별도 공개 모델들이 존재해도 UR3+2F-85 통합 모델의 정확성이 자동 검증되는 것은 아니다. [Menagerie](https://github.com/google-deepmind/mujoco_menagerie)
 
 부품은 직접 정의한 단순 형상으로 시작한다. 삽입 구멍은 여러 primitive/convex 형상을 조합해 실제 충돌 공간을 만들고 단면·접촉을 검사한다. 일반 mesh 충돌 형상의 convex 처리로 구멍이 막힐 수 있다. [MuJoCo modeling](https://mujoco.readthedocs.io/en/stable/modeling.html)
 
