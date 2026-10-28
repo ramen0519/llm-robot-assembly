@@ -12,7 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 GRIPPER_PATH = ROOT / "models/robotiq_2f85/2f85.xml"
 
 
-def load_robot_with_gripper():
+def build_robot_spec():
+    """Return a fresh editable composition; source model files remain unchanged."""
     arm = mujoco.MjSpec.from_file(str(SCENE_PATH))
     gripper = mujoco.MjSpec.from_file(str(GRIPPER_PATH))
 
@@ -22,7 +23,11 @@ def load_robot_with_gripper():
     # No free joint: the gripper housing is rigidly mounted to the wrist.
     # Prefixes separate names such as "base", "black" and "collision" in the two models.
     arm.attach(gripper, site="attachment_site", prefix="gripper_")
-    model = arm.compile()
+    return arm
+
+
+def load_robot_with_gripper():
+    model = build_robot_spec().compile()
     data = mujoco.MjData(model)
     mujoco.mj_resetDataKeyframe(model, data, model.key("home").id)
     mujoco.mj_forward(model, data)

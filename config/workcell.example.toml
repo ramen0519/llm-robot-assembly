@@ -1,0 +1,42 @@
+# Step 11 example, NOT a measurement of the laboratory.
+# All sizes below are FULL sizes in metres (1 mm = 0.001 m).
+schema_version = 1
+profile_name = "example_workcell"
+measurement_status = "example_unmeasured"  # or measured_nominal after measuring
+
+[table]
+# Table-top frame: origin at the centre of the upper surface; +Z upward.
+top_center_world_m = [0.0, 0.0, 0.75]
+size_xy_m = [1.0, 0.8]
+thickness_m = 0.04
+leg_width_m = 0.04  # Four simplified square legs; replace geometry if needed.
+yaw_deg = 0.0     # Counterclockwise viewed from above, relative to world +X.
+
+[robot]
+model = "ur3e"              # Only this model is implemented; UR3 is different.
+gripper = "robotiq_2f85"
+# Fixed base above the tabletop. Z = table height + mount height.
+base_xy_table_m = [0.0, 0.20]
+mount_height_m = 0.0        # Height of an optional box-shaped mounting plate/pedestal.
+mount_size_xy_m = [0.12, 0.12]  # Full footprint, aligned with robot base yaw.
+yaw_deg = 0.0               # Relative to the table-top frame.
+
+[part]
+id = "part_a"
+shape = "box"              # One test block; not the final assembly design.
+size_m = [0.04, 0.03, 0.04]
+mass_kg = 0.05
+spawn_xy_table_m = [0.13, -0.10]
+yaw_deg = 0.0               # Relative to the table-top frame.
+spawn_clearance_m = 0.005    # Start 5 mm above the top and settle through physics.
+
+[target]
+id = "place_a"
+xy_table_m = [-0.12, -0.12]
+size_xy_m = [0.08, 0.08]    # Visual region only; not a solid fixture or an obstacle.
+yaw_deg = 0.0
+
+[contact]
+# Same MuJoCo friction triple on block/table: sliding, torsional, rolling.
+# Example parameters, not experimentally identified material properties.
+friction = [0.8, 0.005, 0.0001]

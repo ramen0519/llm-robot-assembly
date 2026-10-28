@@ -2,7 +2,7 @@
 
 MuJoCo에서 조립 작업을 계획·실행·검증하고, 성공과 실패 경험을 재사용하는 LLM 기반 로봇 조립 졸업프로젝트.
 
-현재 단계는 **기초 낙하 장면, UR3e 단일 관절 이동, 2F-85 장착·자세 유지·빈 상태의 개폐, 명목 TCP 좌표 확인, 가까운 목표의 IK 계산 및 모터를 통한 TCP 이동·도착 검사 및 구조화된 실패 기록 완료**다. 물체 파지, 범용 경로 계획, 에이전트, 실물 연결은 후속 단계다.
+현재 단계는 **기초 낙하 장면, UR3e 단일 관절 이동, 2F-85 장착·자세 유지·빈 상태의 개폐, 명목 TCP 좌표 확인, 가까운 목표의 IK 계산 및 모터를 통한 TCP 이동·도착 검사, 구조화된 실패 기록, 설정 가능한 작업대와 시험 부품의 물리 안정화 검사 완료**다. 물체 파지, 범용 경로 계획, 에이전트, 실물 연결은 후속 단계다.
 
 개발 경로는 `C:\dev\llm-robot-assembly`이며, GitHub 저장소는 [ramen0519/llm-robot-assembly](https://github.com/ramen0519/llm-robot-assembly)다.
 
@@ -35,7 +35,7 @@ MuJoCo에서 조립 작업을 계획·실행·검증하고, 성공과 실패 경
 - [x] M2 일부: mink로 TCP 위쪽 30mm 목표의 관절 각도 계산·오차 및 제한 검사 (정지 자세, 모터 실행 전)
 - [x] M2 일부: 중력 보상 위치 제어로 TCP 이동, 중간 자세·실제 이동 중 접촉 검사와 도착·안정 판정
 - [x] M2 일부: FailureReport에 실패 코드·시점·목표/실제 상태·접촉을 저장하고 실패 시 중단
-- [ ] M1: 로봇·그리퍼·작업대를 로드하고 관절 제어와 상태 읽기
+- [x] M1: 설정 파일로 작업대·UR3e·2F-85·시험 부품을 구성하고 자세 유지·상태 읽기·부품 안정화 검사
 - [ ] M2: 기존 IK 기능, 제한된 이동 경로, 충돌·관절 한계 검사
 - [ ] M3: 한 부품의 물리적인 집기·배치·삽입과 결과 판정
 - [ ] M4: 스크립트 기준선으로 3→6→약 10부품 조립
@@ -70,6 +70,8 @@ MuJoCo 3.17.0과 mink 1.3.0으로 가까운 TCP 목표의 IK 계산과 모터를
 - [7단계: TCP 위치·방향과 좌표축 확인](docs/STEP_07_TCP_FRAME.md)
 - [8단계: TCP 목표에서 관절 각도 계산하기 — IK](docs/STEP_08_TCP_IK.md)
 - [9단계: IK 결과로 천천히 이동하고 실제 TCP 도착 확인](docs/STEP_09_TCP_MOTION.md)
+- [10단계: 실패 코드·시점·목표/실제 상태·접촉을 JSON으로 기록](docs/STEP_10_FAILURE_REPORT.md)
+- [11단계: 실측값으로 바꾸기 쉬운 작업대·부품 장면](docs/STEP_11_CONFIGURABLE_WORKCELL.md)
 - [실패 상황과 Fallback 설계 — 자동 복구 미구현](docs/FAILURE_RECOVERY_DESIGN.md)
 - [전체 개발 계획](docs/PROJECT_PLAN.md)
 - [입문 설명서](docs/BEGINNER_GUIDE.md)
@@ -217,3 +219,14 @@ uv run --locked python -m unittest discover -s tests -p test_failure_report.py -
 ```
 
 실제 MuJoCo 접촉(2초 검출, 마지막 정상 관측 1.998초), 목표 미도달, IK 예산 부족, 후보 접촉, 중단·불완전 기록 및 저장 오류를 검사했다. 전체 회귀검사는 20개가 통과했다. 자동 복구는 추가하지 않았으며, 이번 파일 저장 연결 범위는 `move_tcp.py`다. JSON 읽는 법과 코드 흐름은 [10단계 문서](docs/STEP_10_FAILURE_REPORT.md)를 참고한다.
+
+작업대·로봇 설치 위치·시험 부품·목표 영역을 설정 파일로 구성하고 3초간 물리 안정화를 검사한다. 기본값은 실측값이 아닌 예시다.
+
+```powershell
+uv run --locked python scripts/view_workcell.py --check
+uv run --locked python scripts/view_workcell.py
+```
+
+개인 설정은 `config/workcell.example.toml`을 Git 제외 파일 `config/local.workcell.toml`로 복사해 수정한 뒤 `--config config/local.workcell.toml`로 지정한다. 이 PC에는 미측정 예시를 복사해 준비했다. 작업대 크기·높이·위치·회전, 로봇 설치 위치·회전·받침 높이, 부품 크기·질량·배치, 목표 위치를 변경할 수 있다. 로봇 베이스와 부품 높이는 작업대 기준으로 계산된다.
+
+주황색은 시험 부품, 초록색은 시각적 목표이며 흰 원점과 빨강/초록/파랑 축은 작업대 좌표계다. 검사 후 뷰어는 정지 화면으로 남고 창을 닫으면 종료된다. 기본 및 위치·높이·회전·받침을 바꾼 설정의 안정화, 잘못된 배치·UR3 모델 혼동 거부를 확인했다. 기존 20개와 새 6개 검사가 통과했다. 이 장면에서 목표까지의 이동·집기·삽입·도달 가능성은 아직 검증하지 않았다. 실행별 설정 사본과 결과는 `runs/step11/`에 저장한다. 설정 항목과 측정 기준은 [11단계 설명서](docs/STEP_11_CONFIGURABLE_WORKCELL.md)에 정리했다.

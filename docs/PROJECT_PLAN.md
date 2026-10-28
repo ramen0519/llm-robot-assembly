@@ -199,6 +199,9 @@ LangGraph의 checkpointer는 실행 thread의 상태를 보관하고 store는 �
 
 **MuJoCo에서 장면·모션·스킬을 먼저 구현하고 에이전트를 연결한다.**
 
+11단계에서는 [작업대 설정 계약](STEP_11_CONFIGURABLE_WORKCELL.md)을 구현했다. `config/workcell.example.toml`은 미측정 예시이며 실측 공칭값은 Git 제외 `config/local.workcell.toml`에 입력한다. 월드의 바닥과 작업대 상판 중심, 로봇 베이스를 구분하고 작업대 크기·높이·yaw, 로봇 장착 위치·yaw·받침, 시험 부품·목표 영역을 설정으로 조합한다. 부품 관측은 `sim_ground_truth`, 목표는 `configured_target`으로 표시하며 각 실행의 설정 사본·해시와 장면 안정화 결과를 저장한다. 현재는 수평 사각 작업대와 한 상자 부품을 지원한다. 실제 환경 캘리브레이션·임의 CAD·카메라·집기·도달 가능성은 포함하지 않으며 다음 단계에서 현재 상태 출발 이동을 연결한다.
+
+
 MuJoCo는 Python 바인딩과 viewer를 제공한다. 초기 UR3e 모델은 공개 URDF에서 변환된 커뮤니티 MJCF의 고정 버전을 사용하며, 라이선스와 출처를 함께 보관한다. 현재는 모델 로딩, 제한된 한 관절 이동, 2F-85 결합·빈 상태 개폐, 명목 TCP의 위치·방향 및 모델 내부 변환, 가까운 TCP 목표로의 물리 이동과 도착을 확인했다. 검증 범위는 단계별 설명서에 기록하며, 범용 운동·파지·실물 TCP 보정·모델 정확도 검증은 이후 수행한다. 모델을 불러오는 것만으로 구동기와 그리퍼 연결까지 완성되는 것으로 가정하지 않는다. [MuJoCo Python](https://mujoco.readthedocs.io/en/stable/python.html), [공식 UR description](https://github.com/UniversalRobots/Universal_Robots_ROS2_Description)
 
 MuJoCo Menagerie의 2F-85 모델을 고정 커밋·라이선스와 함께 통합하고, 현재 초기 자세에서 장착·개폐를 검증했다. 실제 설치된 그리퍼의 버전과 장착 변환·보정은 실물 단계에서 확인한다. 별도 공개 모델들이 존재해도 UR3+2F-85 통합 모델의 정확성이 자동 검증되는 것은 아니다. [Menagerie](https://github.com/google-deepmind/mujoco_menagerie)
