@@ -10,6 +10,7 @@ import mujoco
 import mujoco.viewer
 import numpy as np
 
+from failure_report import FailureCode, FailureEvent
 from ur3e_with_gripper import load_robot_with_gripper, mount_error
 from view_ur3e import set_camera
 
@@ -69,10 +70,13 @@ def pad_gaps_mm(model, data):
 def measure_state(model, data, initial_arm, phase):
     """Read actual state, including all enabled contacts and linkage constraints."""
     if not all(np.all(np.isfinite(values)) for values in (data.qpos, data.qvel, data.ctrl)):
-        raise RuntimeError("Non-finite joint/control state.")
+        raise FailureEvent(FailureCode.SIMULATION_INVALID, "Non-finite joint/control state.", kinematics_fresh=False)
     if any(warning.number for warning in data.warning):
-        raise RuntimeError("MuJoCo reported a physics warning.")
-    mount_error(model, data)
+        raise FailureEvent(FailureCode.SIMULATION_INVALID, "MuJoCo reported a physics warning.", kinematics_fresh=False)
+    try:
+        mount_error(model, data)
+    except RuntimeError as error:
+        raise FailureEvent(FailureCode.MODEL_OR_CONTROL_INVALID, str(error)) from error
 
     right = {model.geom(f"gripper_right_pad{i}").id for i in (1, 2)}
     left = {model.geom(f"gripper_left_pad{i}").id for i in (1, 2)}
@@ -86,7 +90,7 @@ def measure_state(model, data, initial_arm, phase):
         )
         if not opposing_pads:
             names = [model.geom(g).name or f"geom#{g}" for g in (contact.geom1, contact.geom2)]
-            raise RuntimeError(f"Unexpected contact: {names[0]} / {names[1]}")
+            raise FailureEvent(FailureCode.UNEXPECTED_CONTACT, f"Unexpected contact: {names[0]} / {names[1]}")
         penetration = max(penetration, -float(contact.dist) * 1000.0)
 
     q = data.qpos[model.jnt_qposadr]
@@ -125,7 +129,12 @@ def check_path_sample(row):
     }
     for name, limit in limits.items():
         if not math.isfinite(row[name]) or row[name] > limit:
-            raise RuntimeError(f"{name}={row[name]:.9f} exceeded {limit} at {row['time_s']:.3f} s.")
+            code = (FailureCode.SIMULATION_INVALID if not math.isfinite(row[name]) else
+                    FailureCode.MOTION_LIMIT_EXCEEDED if name in ("arm_drift_deg", "joint_limit_overshoot_rad")
+                    else FailureCode.GRIPPER_STATE_INVALID)
+            raise FailureEvent(code, f"{name}={row[name]:.9f} exceeded {limit} at {row['time_s']:.3f} s.",
+                               violations=[{"metric": name, "observed": row[name], "maximum": limit,
+                                            "sample_time_s": row["time_s"]}])
 
 
 def run_cycle(model, data, viewer=None, trace_path=TRACE_PATH):

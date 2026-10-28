@@ -168,7 +168,7 @@ class SimulationAdapter(EnvironmentAdapter):
 
 각 스킬은 내부적으로 이동·그리퍼·관측을 조합한다. 물리 시뮬레이션 step이나 로봇 제어 주기마다 LLM을 호출하지 않는다. `insert`는 성공을 보장하는 함수가 아니라 실제 제어를 수행하고 결과를 보고하는 스킬이다.
 
-실패 분류·관측 증거·허용 대응·시험 사례는 [실패 상황과 Fallback 설계 v0.1](FAILURE_RECOVERY_DESIGN.md)에 구체화했다. 기존 초안의 `UNREACHABLE`은 수치 IK 실패와 구분해 `IK_NOT_CONVERGED`로 보고하고, 계획 후보의 접촉(`PLANNED_CONTACT`)과 실행 중 접촉(`UNEXPECTED_CONTACT`)도 분리한다. 미도달·미안정·모션 제한 위반·관측 불확실·실행 여부 미확인을 별도로 다룬다. 공통 코드·보고서와 자동 복구는 아직 미구현이며, 현재 검출기와 중단 동작부터 구조화하는 것을 다음 작은 단계로 둔다.
+실패 분류·관측 증거·허용 대응·시험 사례는 [실패 상황과 Fallback 설계 v0.1](FAILURE_RECOVERY_DESIGN.md)에 구체화했다. 기존 초안의 `UNREACHABLE`은 수치 IK 실패와 구분해 `IK_NOT_CONVERGED`로 보고하고, 계획 후보의 접촉(`PLANNED_CONTACT`)과 실행 중 접촉(`UNEXPECTED_CONTACT`)도 분리한다. 미도달·미안정·모션 제한 위반·관측 불확실·실행 여부 미확인을 별도로 다룬다. 공통 실패 코드와 `FailureReport`는 현재 TCP 이동 실행기에 연결했다. 실행별 JSON에 목표·실제 상태·접촉과 마지막 정상 관측을 저장하며, 검증 범위는 [10단계 문서](STEP_10_FAILURE_REPORT.md)에 기록했다. 현재 pose 기록은 기존 코드의 3×3 회전행렬이며 향후 adapter의 quaternion 계약과 구분한다. 자동 복구와 메모리 검색은 아직 미구현이다.
 
 하나의 실패에 원인이 확정되지 않을 수 있다. 예를 들어 삽입 깊이 부족은 관측 사실이고, 마찰이 원인이라는 설명은 가설이다. 에이전트가 제안한 원인과 관측 사실을 구분해서 저장한다.
 

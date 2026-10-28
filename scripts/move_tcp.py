@@ -7,11 +7,11 @@ import math
 from pathlib import Path
 import time
 
-from mink.exceptions import MinkError
 import mujoco
 import mujoco.viewer
 import numpy as np
 
+from failure_report import FailureCode, FailureEvent, TrialRecorder, capture_observation
 from move_gripper import measure_state, check_path_sample
 from solve_tcp_ik import DEFAULT_OFFSET_M, check_candidate, pose_errors, solve_tcp_pose
 from ur3e_with_gripper import load_robot_with_gripper
@@ -25,6 +25,7 @@ STABLE_WINDOW_S = 0.5
 POSITION_TOL_MM, ORIENTATION_TOL_DEG = 1.0, 0.5
 FINAL_JOINT_SPEED_DEG_S = 0.5
 PEAK_JOINT_SPEED_DEG_S = 15.0
+RUNS_ROOT = Path(__file__).resolve().parents[1] / "runs/step10"
 TRACE_PATH = Path(__file__).resolve().parents[1] / "runs/step09/tcp_motion.csv"
 
 
@@ -53,7 +54,15 @@ def prepare_motion(model, data):
     target_position = start_position + DEFAULT_OFFSET_M
     result = solve_tcp_pose(model, data, target_position, rotation)
     if not result.success:
-        raise RuntimeError(f"IK failed: {result.reason}; no motion started.")
+        candidate = mujoco.MjData(model)
+        candidate.qpos[:] = result.qpos
+        mujoco.mj_forward(model, candidate)  # Calculation copy, never the live robot.
+        raise FailureEvent(
+            FailureCode.IK_NOT_CONVERGED, f"IK failed: {result.reason}; no motion started.", phase="ik",
+            violations=[{"reason": result.reason, "iterations": result.iterations,
+                         "position_error_m": result.position_error_m,
+                         "orientation_error_rad": result.orientation_error_rad}],
+            candidate=capture_observation(model, candidate, source="ik_candidate"))
     start, goal = data.qpos[:6].copy(), result.qpos[:6].copy()
     # At least 101 samples, and <= 0.25 deg joint increments. No continuous guarantee.
     intervals = max(100, math.ceil(float(np.max(np.abs(goal - start))) / math.radians(0.25)))
@@ -61,7 +70,7 @@ def prepare_motion(model, data):
     for fraction in np.linspace(0.0, 1.0, intervals + 1):
         scratch.qpos[:] = data.qpos
         scratch.qpos[:6] = start + fraction * (goal - start)
-        check_candidate(model, scratch, data.qpos, list(range(6, 14)))
+        check_candidate(model, scratch, data.qpos, list(range(6, 14)), phase="preflight")
     return MotionPlan(start, goal, start_position, target_position, rotation, intervals + 1)
 
 
@@ -87,7 +96,7 @@ class ArmPositionController:
                 and bias[1] == -self.kp[index] and bias[2] < 0
                 and model.actuator_ctrllimited[actuator] and model.actuator_forcelimited[actuator]
             ):
-                raise ValueError("Gravity feedforward requires the original unit-gear position servos.")
+                raise FailureEvent(FailureCode.MODEL_OR_CONTROL_INVALID, "Gravity feedforward requires the original unit-gear position servos.")
         self.gravity_data = mujoco.MjData(model)
         self.gripper_actuator = model.actuator("gripper_fingers_actuator").id
 
@@ -104,7 +113,9 @@ class ArmPositionController:
         bounds = self.model.actuator_ctrlrange[self.actuators]
         if (not np.all(np.isfinite(command)) or np.any(command < bounds[:, 0])
                 or np.any(command > bounds[:, 1])):
-            raise RuntimeError("Compensated motor command exceeds control limits.")
+            raise FailureEvent(FailureCode.MODEL_OR_CONTROL_INVALID, "Compensated motor command exceeds control limits.",
+                               violations=[{"metric": "arm_ctrl_rad", "observed": command,
+                                            "allowed_ranges_rad": bounds}])
         data.ctrl[self.actuators] = command
         data.ctrl[self.gripper_actuator] = 0.0  # Open; fingers still follow physical dynamics.
 
@@ -113,15 +124,20 @@ def measure_motion(model, data, plan, reference, controller):
     # Reuse the mounted-gripper checks; arm drift here is error relative to the reference.
     phase = "hold" if data.time < HOLD_S - 1e-9 else "move" if data.time < HOLD_S + MOVE_S - 1e-9 else "settle"
     row = measure_state(model, data, reference, phase)
-    check_path_sample(row)
     if data.ncon:
         contact = data.contact[0]
         names = [model.geom(int(i)).name or str(i) for i in (contact.geom1, contact.geom2)]
-        raise RuntimeError(f"Contact is not allowed during this open-gripper move: {names}")
+        raise FailureEvent(FailureCode.UNEXPECTED_CONTACT,
+                           f"Contact is not allowed during this open-gripper move: {names}")
+    check_path_sample(row)
     if row["max_joint_speed_deg_s"] > PEAK_JOINT_SPEED_DEG_S:
-        raise RuntimeError("Measured joint speed exceeded 15 deg/s.")
+        raise FailureEvent(FailureCode.MOTION_LIMIT_EXCEEDED, "Measured joint speed exceeded 15 deg/s.",
+                           violations=[{"metric": "max_joint_speed_deg_s", "observed": row["max_joint_speed_deg_s"],
+                                        "maximum": PEAK_JOINT_SPEED_DEG_S}])
     if not all(80 <= row[key] <= 90 for key in ("pad1_gap_mm", "pad2_gap_mm")):
-        raise RuntimeError("The empty gripper did not remain open.")
+        raise FailureEvent(FailureCode.GRIPPER_STATE_INVALID, "The empty gripper did not remain open.",
+                           violations=[{"metric": key, "observed": row[key], "allowed_range_mm": [80, 90]}
+                                       for key in ("pad1_gap_mm", "pad2_gap_mm") if not 80 <= row[key] <= 90])
     row["tracking_error_deg"] = row.pop("arm_drift_deg")
     row["gripper_command"] = row.pop("command")
     position, _ = read_tcp_pose(data)
@@ -145,7 +161,7 @@ def measure_motion(model, data, plan, reference, controller):
         row[f"{name}_ctrl_rad"] = float(data.ctrl[actuator])
         row[f"{name}_force_nm"] = float(data.actuator_force[actuator])
     if not all(math.isfinite(value) for key, value in row.items() if key != "phase"):
-        raise RuntimeError("Non-finite measurement.")
+        raise FailureEvent(FailureCode.SIMULATION_INVALID, "Non-finite measurement.", kinematics_fresh=False)
     return row
 
 
@@ -156,73 +172,101 @@ def add_motion_overlay(scene, data, plan):
     append_marker(scene, plan.target_position, "", 0.003, (0.0, 1.0, 1.0, 1.0))
 
 
-def run_motion(model, data, plan, viewer=None, trace_path=TRACE_PATH):
+def run_motion(model, data, plan, viewer=None, trace_path=TRACE_PATH, on_valid_sample=None):
     """Execute via ctrl + mj_step only; stop the simulation immediately on a failed check."""
     if (abs(float(data.time)) > 1e-9 or not np.allclose(data.qpos[:6], plan.start_arm, atol=1e-10, rtol=0)):
-        raise ValueError("The plan must be executed from its unchanged starting state.")
+        raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, "The plan must be executed from its unchanged starting state.")
     timestep = float(model.opt.timestep)
     steps = round(TOTAL_S / timestep)
     if timestep > 0.002 + 1e-12 or not math.isclose(steps * timestep, TOTAL_S, abs_tol=1e-9):
-        raise ValueError("Use a timestep <= 0.002 s that divides the 7-second trial exactly.")
+        raise FailureEvent(FailureCode.MODEL_OR_CONTROL_INVALID, "Use a timestep <= 0.002 s that divides the 7-second trial exactly.")
     controller = ArmPositionController(model)
     frame_steps = max(1, round(1 / (60 * timestep)))
     wall_start, last_phase = time.monotonic(), None
     rows = []
-    trace_path.parent.mkdir(parents=True, exist_ok=True)
-    with trace_path.open("w", encoding="utf-8", newline="") as trace:
-        writer = None
-        for step in range(steps + 1):
-            if viewer is not None and not viewer.is_running():
-                raise RuntimeError("Viewer closed before the trial finished; trial incomplete.")
-            # Measure the actual integrated state, including the initial pose.
-            reference = reference_at(float(data.time), plan.start_arm, plan.goal_arm)
-            try:
+    phase = "execute_setup"
+    try:
+        trace_path.parent.mkdir(parents=True, exist_ok=True)
+        with trace_path.open("w", encoding="utf-8", newline="") as trace:
+            writer = None
+            for step in range(steps + 1):
+                phase = "hold" if data.time < HOLD_S - 1e-9 else "move" if data.time < HOLD_S + MOVE_S - 1e-9 else "settle"
+                if viewer is not None and not viewer.is_running():
+                    raise FailureEvent(FailureCode.CANCELLED, "Viewer closed before the trial finished; trial incomplete.", phase=phase)
+                # Measure the actual integrated state, including the initial pose.
+                reference = reference_at(float(data.time), plan.start_arm, plan.goal_arm)
                 row = measure_motion(model, data, plan, reference, controller)
-            except RuntimeError as error:
-                raise RuntimeError(f"At {data.time:.3f} s: {error}") from error
-            if writer is None:
-                writer = csv.DictWriter(trace, fieldnames=list(row))
-                writer.writeheader()
-            writer.writerow(row)
-            rows.append(row)
-            if row["phase"] != last_phase:
-                print(f"  {data.time:.3f} s: {row['phase']}", flush=True)
-                last_phase = row["phase"]
-            if viewer is not None and (step % frame_steps == 0 or step == steps):
-                with viewer.lock():
-                    viewer.user_scn.ngeom = 0
-                    add_motion_overlay(viewer.user_scn, data, plan)
-                viewer.sync()
-                time.sleep(max(0.0, wall_start + float(data.time) - time.monotonic()))
-            if step == steps:
-                break
-            controller.apply(data, reference)
-            mujoco.mj_step(model, data)
-            mujoco.mj_forward(model, data)  # Refresh TCP and contacts at the new state.
-            if not math.isclose(float(data.time), (step + 1) * timestep, abs_tol=1e-8):
-                raise RuntimeError("Physics time did not advance as expected.")
+                if writer is None:
+                    writer = csv.DictWriter(trace, fieldnames=list(row))
+                    writer.writeheader()
+                writer.writerow(row)
+                rows.append(row)
+                if on_valid_sample is not None:
+                    on_valid_sample(model, data, row)
+                if row["phase"] != last_phase:
+                    print(f"  {data.time:.3f} s: {row['phase']}", flush=True)
+                    last_phase = row["phase"]
+                if viewer is not None and (step % frame_steps == 0 or step == steps):
+                    with viewer.lock():
+                        viewer.user_scn.ngeom = 0
+                        add_motion_overlay(viewer.user_scn, data, plan)
+                    viewer.sync()
+                    time.sleep(max(0.0, wall_start + float(data.time) - time.monotonic()))
+                if step == steps:
+                    break
+                controller.apply(data, reference)
+                mujoco.mj_step(model, data)
+                mujoco.mj_forward(model, data)  # Refresh TCP and contacts at the new state.
+                if not math.isclose(float(data.time), (step + 1) * timestep, abs_tol=1e-8):
+                    raise FailureEvent(FailureCode.SIMULATION_INVALID, "Physics time did not advance as expected.", kinematics_fresh=False)
+    except FailureEvent as error:
+        error.phase = error.phase or phase
+        raise
+    except KeyboardInterrupt as error:
+        raise FailureEvent(FailureCode.CANCELLED, "Interrupted by user.", phase=phase,
+                           kinematics_fresh=False) from error
+    except Exception as error:
+        raise FailureEvent(FailureCode.UNCLASSIFIED_ERROR, str(error), phase=phase,
+                           kinematics_fresh=False) from error
     return rows
 
 
-def assess_motion(rows, timestep=0.002):
+def assess_motion(rows, timestep=0.002, *, raise_on_failure=False):
     times = np.array([r["time_s"] for r in rows])
     if (len(rows) != round(TOTAL_S / timestep) + 1 or abs(times[0]) > 1e-8
             or abs(times[-1] - TOTAL_S) > 1e-8
             or not np.allclose(np.diff(times), timestep, atol=1e-8, rtol=0)):
+        if raise_on_failure:
+            raise FailureEvent(FailureCode.INCOMPLETE_RECORD, "A full, continuous 7-second trial is required.", phase="verify")
         raise ValueError("A full, continuous 7-second trial is required.")
     stable = [r for r in rows if r["time_s"] >= TOTAL_S - STABLE_WINDOW_S - 1e-9]
     maxima = {key: max(r[key] for r in stable) for key in (
         "tcp_position_error_mm", "tcp_orientation_error_deg", "max_joint_speed_deg_s",
         "tcp_speed_mm_s", "tcp_angular_speed_deg_s",
     )}
-    checks = {
-        "Final-window TCP position error <= 1 mm": maxima["tcp_position_error_mm"] <= POSITION_TOL_MM,
-        "Final-window TCP orientation error <= 0.5 deg": maxima["tcp_orientation_error_deg"] <= ORIENTATION_TOL_DEG,
-        "Final-window joint speed < 0.5 deg/s": maxima["max_joint_speed_deg_s"] < FINAL_JOINT_SPEED_DEG_S,
-        "Final-window TCP speed < 1 mm/s": maxima["tcp_speed_mm_s"] < 1.0,
-        "Final-window TCP angular speed < 0.5 deg/s": maxima["tcp_angular_speed_deg_s"] < 0.5,
-        "No detected contacts throughout trial": all(r["contact_count"] == 0 for r in rows),
-    }
+    # Each violation retains its own code; one primary code is only a routing hint.
+    rules = (
+        ("tcp_position_error_mm", POSITION_TOL_MM, "<=", FailureCode.TCP_NOT_REACHED),
+        ("tcp_orientation_error_deg", ORIENTATION_TOL_DEG, "<=", FailureCode.TCP_NOT_REACHED),
+        ("max_joint_speed_deg_s", FINAL_JOINT_SPEED_DEG_S, "<", FailureCode.NOT_SETTLED),
+        ("tcp_speed_mm_s", 1.0, "<", FailureCode.NOT_SETTLED),
+        ("tcp_angular_speed_deg_s", 0.5, "<", FailureCode.NOT_SETTLED),
+    )
+    checks, violations = {}, []
+    for metric, threshold, comparison, code in rules:
+        observed = maxima[metric]
+        passed = observed <= threshold if comparison == "<=" else observed < threshold
+        checks[f"Final-window {metric} {comparison} {threshold}"] = passed
+        if not passed:
+            worst = max(stable, key=lambda row: row[metric])
+            violations.append({"code": code, "metric": metric, "observed": observed,
+                               "threshold": threshold, "required_comparison": comparison,
+                               "sample_time_s": worst["time_s"], "window_s": [TOTAL_S - STABLE_WINDOW_S, TOTAL_S]})
+    checks["No detected contacts throughout trial"] = all(r["contact_count"] == 0 for r in rows)
+    if not checks["No detected contacts throughout trial"]:
+        first = next(r for r in rows if r["contact_count"] != 0)
+        violations.insert(0, {"code": FailureCode.UNEXPECTED_CONTACT, "metric": "contact_count",
+                              "observed": first["contact_count"], "maximum": 0, "sample_time_s": first["time_s"]})
     for key, value in maxima.items():
         print(f"  Final-window max {key}: {value:.9f}")
     for key in ("max_arm_speed_deg_s", "max_joint_speed_deg_s", "tracking_error_deg",
@@ -230,7 +274,68 @@ def assess_motion(rows, timestep=0.002):
         print(f"  Whole-trial max {key}: {max(r[key] for r in rows):.9f}")
     for label, passed in checks.items():
         print(f"  [{'PASS' if passed else 'FAIL'}] {label}")
+    if violations and raise_on_failure:
+        raise FailureEvent(violations[0]["code"], "Final measured motion did not pass verification.",
+                           phase="verify", violations=violations)
     return all(checks.values())
+
+
+@dataclass
+class TrialResult:
+    status: str
+    run_dir: Path
+    failure_path: Path | None = None
+
+
+def execute_trial(*, headless=True, output_root=RUNS_ROOT):
+    """Run exactly once. Save observations on failure; never retry or reset a failed trial."""
+    recorder = TrialRecorder(output_root)
+    model = data = None
+    phase = "load_model"
+    print(f"Run directory: {recorder.run_dir}", flush=True)
+    try:
+        model, data = load_robot_with_gripper()
+        start, rotation = read_tcp_pose(data)
+        recorder.set_context(model, {
+            "frame": "world", "position_m": start + DEFAULT_OFFSET_M, "rotation_matrix": rotation,
+            "position_tolerance_mm": POSITION_TOL_MM, "orientation_tolerance_deg": ORIENTATION_TOL_DEG,
+        })
+        phase = "prepare"
+        plan = prepare_motion(model, data)
+        print(f"Nominal joint-path preflight: {plan.preflight_samples} poses checked.")
+        print("World TCP target: " + np.array2string(plan.target_position, precision=6))
+        print("Hold 1 s -> joint-space move 4 s -> settle 2 s; gripper stays open.")
+        print("Gravity feedforward through force-limited servos; physical motion, no teleportation.")
+        phase = "execute_setup"
+        if headless:
+            rows = run_motion(model, data, plan, trace_path=recorder.trace_path, on_valid_sample=recorder.remember_valid)
+        else:
+            with mujoco.viewer.launch_passive(model, data, show_left_ui=False, show_right_ui=False) as viewer:
+                with viewer.lock():
+                    set_tcp_camera(viewer.cam, data)
+                rows = run_motion(model, data, plan, viewer, recorder.trace_path, recorder.remember_valid)
+        phase = "verify"
+        assess_motion(rows, float(model.opt.timestep), raise_on_failure=True)
+    except (Exception, KeyboardInterrupt) as error:
+        # Only known boundary errors are classified here; unknown bugs stay unclassified.
+        if isinstance(error, ValueError) and phase in ("load_model", "prepare"):
+            code = FailureCode.MODEL_OR_CONTROL_INVALID if phase == "load_model" else FailureCode.INPUT_OR_PRECONDITION_INVALID
+            event = FailureEvent(code, str(error), phase=phase, kinematics_fresh=False)
+            event.__cause__ = error
+            error = event
+        print(f"TCP physical motion stopped: {error}", flush=True)
+        try:
+            failure_path = recorder.fail(error, phase, model, data)
+        except Exception as storage_error:
+            # Preserve the original failure in the console even if JSON cannot be written.
+            print(f"Failure report could not be saved: {storage_error}", flush=True)
+            raise OSError(f"Report storage failed; original failure: {error}") from storage_error
+        status = "cancelled" if isinstance(error, KeyboardInterrupt) or (
+            isinstance(error, FailureEvent) and error.code == FailureCode.CANCELLED) else "failed"
+        print(f"Failure report: {failure_path}", flush=True)
+        return TrialResult(status, recorder.run_dir, failure_path)
+    recorder.finish("success")  # Storage failure propagates; do not announce a completed run.
+    return TrialResult("success", recorder.run_dir)
 
 
 def main():
@@ -238,27 +343,14 @@ def main():
     parser.add_argument("--headless", action="store_true", help="Run identical physics without a viewer.")
     args = parser.parse_args()
     try:
-        model, data = load_robot_with_gripper()
-        plan = prepare_motion(model, data)
-        print(f"Nominal joint-path preflight: {plan.preflight_samples} poses checked.")
-        print("World TCP target: " + np.array2string(plan.target_position, precision=6))
-        print("Hold 1 s -> joint-space move 4 s -> settle 2 s; gripper stays open.")
-        print("Gravity feedforward through force-limited servos; physical motion, no teleportation.")
-        print(f"Measured trace (overwritten on execution): {TRACE_PATH}", flush=True)
-        if args.headless:
-            rows = run_motion(model, data, plan)
-        else:
-            with mujoco.viewer.launch_passive(model, data, show_left_ui=False, show_right_ui=False) as viewer:
-                with viewer.lock():
-                    set_tcp_camera(viewer.cam, data)
-                rows = run_motion(model, data, plan, viewer)
-        passed = assess_motion(rows, float(model.opt.timestep))
-        print(f"TCP physical motion: {'PASS' if passed else 'FAIL'}")
-        print("Validation covers this simulated scene and sampled motion only; no hardware command was sent.")
-        return 0 if passed else 1
-    except (ValueError, RuntimeError, MinkError) as error:
+        result = execute_trial(headless=args.headless)
+    except OSError as error:
         print(f"TCP physical motion: FAIL ({error})")
         return 1
+    label = "PASS" if result.status == "success" else result.status.upper()
+    print(f"TCP physical motion: {label}")
+    print("Validation covers this simulated scene and sampled motion only; no hardware command was sent.")
+    return 0 if result.status == "success" else 1
 
 
 if __name__ == "__main__":

@@ -6,11 +6,12 @@ import math
 import time
 
 import mink
-from mink.exceptions import MinkError
+from mink.exceptions import MinkError, NoSolutionFound
 import mujoco
 import mujoco.viewer
 import numpy as np
 
+from failure_report import FailureCode, FailureEvent, capture_observation
 from ur3e_with_gripper import load_robot_with_gripper
 from view_tcp import (
     TCP_SITE_NAME, add_tcp_overlay, append_connector, append_marker,
@@ -43,26 +44,34 @@ def pose_errors(data, target_position, target_rotation):
     return float(np.linalg.norm(position - target_position)), math.acos(float(np.clip(cosine, -1, 1)))
 
 
-def check_candidate(model, data, initial_qpos, frozen_dofs):
+def check_candidate(model, data, initial_qpos, frozen_dofs, *, phase="ik"):
     """Check one static candidate. This is not a continuous-path certificate."""
+    def reject(code, message, *, fresh=False):
+        raise FailureEvent(code, message, phase=phase,
+                           candidate=capture_observation(model, data, source=f"{phase}_candidate",
+                                                         kinematics_fresh=fresh))
+
     if not np.all(np.isfinite(data.qpos)):
-        raise RuntimeError("IK produced a non-finite configuration.")
+        reject(FailureCode.IK_NOT_CONVERGED, "IK produced a non-finite configuration.")
     # This demo has 14 scalar hinge joints, so qpos and velocity indices coincide.
     limited = model.jnt_limited.astype(bool)
     q = data.qpos[model.jnt_qposadr[limited]]
     bounds = model.jnt_range[limited]
     if np.any(q < bounds[:, 0] - 1e-8) or np.any(q > bounds[:, 1] + 1e-8):
-        raise RuntimeError("IK candidate violates joint limits.")
+        reject(FailureCode.MOTION_LIMIT_EXCEEDED, "IK candidate violates joint limits.")
     if not np.allclose(data.qpos[frozen_dofs], initial_qpos[frozen_dofs], atol=1e-9, rtol=0):
-        raise RuntimeError("IK changed a frozen gripper joint.")
+        reject(FailureCode.MODEL_OR_CONTROL_INVALID, "IK changed a frozen gripper joint.")
     mujoco.mj_forward(model, data)
-    check_tcp_frame(model, data)
+    try:
+        check_tcp_frame(model, data)
+    except (ValueError, RuntimeError) as error:
+        reject(FailureCode.MODEL_OR_CONTROL_INVALID, str(error), fresh=True)
     # Check all model-enabled contacts, including the gripper and floor.
     # The open, unloaded demo allows none; no carrying or insertion contact is modeled yet.
     if data.ncon:
         contact = data.contact[0]
         names = [model.geom(int(i)).name or str(i) for i in (contact.geom1, contact.geom2)]
-        raise RuntimeError(f"IK candidate has a contact: {names[0]} / {names[1]}")
+        reject(FailureCode.PLANNED_CONTACT, f"IK candidate has a contact: {names[0]} / {names[1]}", fresh=True)
 
 
 def solve_tcp_pose(model, initial_data, target_position, target_rotation, max_iterations=MAX_ITERATIONS):
@@ -109,9 +118,14 @@ def solve_tcp_pose(model, initial_data, target_position, target_rotation, max_it
         if success or iteration == max_iterations:
             return IKResult(success, "pose_tolerance" if success else "iteration_limit",
                             configuration.q.copy(), iteration, position_error, orientation_error)
-        velocity = mink.solve_ik(configuration, [task], IK_DT, "daqp", limits=limits, constraints=[freeze])
+        try:
+            velocity = mink.solve_ik(configuration, [task], IK_DT, "daqp", limits=limits, constraints=[freeze])
+        except NoSolutionFound as error:
+            raise FailureEvent(FailureCode.IK_NOT_CONVERGED, str(error), phase="ik",
+                               candidate=capture_observation(model, configuration.data,
+                                                             source="ik_candidate")) from error
         if not np.all(np.isfinite(velocity)):
-            raise RuntimeError("IK solver returned non-finite velocity.")
+            raise FailureEvent(FailureCode.IK_NOT_CONVERGED, "IK solver returned non-finite velocity.", phase="ik")
         configuration.integrate_inplace(velocity, IK_DT)
     raise AssertionError("Bounded IK loop must return or raise.")
 
