@@ -2,7 +2,7 @@
 
 MuJoCo에서 조립 작업을 계획·실행·검증하고, 성공과 실패 경험을 재사용하는 LLM 기반 로봇 조립 졸업프로젝트.
 
-현재 단계는 **기초 낙하 장면, UR3e 단일 관절 이동, 2F-85 장착·자세 유지·빈 상태의 개폐 확인 완료**다. 물체 파지, 여러 관절의 협조 이동, 에이전트, 실물 연결은 후속 단계다.
+현재 단계는 **기초 낙하 장면, UR3e 단일 관절 이동, 2F-85 장착·자세 유지·빈 상태의 개폐 및 명목 TCP 좌표 확인 완료**다. 물체 파지, 여러 관절의 협조 이동, 에이전트, 실물 연결은 후속 단계다.
 
 개발 경로는 `C:\dev\llm-robot-assembly`이며, GitHub 저장소는 [ramen0519/llm-robot-assembly](https://github.com/ramen0519/llm-robot-assembly)다.
 
@@ -31,6 +31,7 @@ MuJoCo에서 조립 작업을 계획·실행·검증하고, 성공과 실패 경
 - [x] M1 일부: 첫 관절의 완만한 목표값 변경과 실제 각도·속도 기반 도착 판정
 - [x] M1 일부: Robotiq 2F-85 결합과 열린 상태의 초기 자세 유지
 - [x] M1 일부: 그리퍼의 완만한 개폐와 실제 패드 간격·속도 기반 완료 판정
+- [x] M2 일부: 명목 TCP 위치·방향 읽기, 좌표축 표시와 모델 내부 변환 검사
 - [ ] M1: 로봇·그리퍼·작업대를 로드하고 관절 제어와 상태 읽기
 - [ ] M2: 기존 IK 기능, 제한된 이동 경로, 충돌·관절 한계 검사
 - [ ] M3: 한 부품의 물리적인 집기·배치·삽입과 결과 판정
@@ -63,6 +64,7 @@ MuJoCo 기본 환경은 아래 버전으로 설치·확인했다. IK 후보는 m
 - [4단계: UR3e 관절 하나 움직이고 도착 확인하기](docs/STEP_04_ONE_JOINT.md)
 - [5단계: Robotiq 2F-85 장착과 초기 자세 유지](docs/STEP_05_GRIPPER_MOUNT.md)
 - [6단계: 그리퍼를 닫고 다시 열며 실제 상태 확인](docs/STEP_06_GRIPPER_CONTROL.md)
+- [7단계: TCP 위치·방향과 좌표축 확인](docs/STEP_07_TCP_FRAME.md)
 - [전체 개발 계획](docs/PROJECT_PLAN.md)
 - [입문 설명서](docs/BEGINNER_GUIDE.md)
 - [개발 작업 지침](AGENTS.md)
@@ -174,3 +176,12 @@ uv run --locked python scripts/move_gripper.py --headless
 ```powershell
 uv run --locked python -m unittest discover -s tests -v
 ```
+
+그리퍼의 집기 기준점(TCP)을 표시하고 월드 기준 위치와 X·Y·Z축 방향을 읽는다. 로봇을 정지시킨 좌표 확인용 뷰어다.
+
+```powershell
+uv run --locked python scripts/view_tcp.py
+uv run --locked python scripts/view_tcp.py --check
+```
+
+노란 점이 TCP이고 X축은 빨강, Y축은 초록, Z축은 파랑이다. 창은 직접 닫으며 `--seconds 5`로 자동 종료할 수 있다. 모델 정의 검사 통과 시 `TCP frame definition: PASS`가 출력된다. 초기 TCP 위치는 월드 기준 약 `[0.130998, -0.297500, 0.147550]`m이고, 손목 장착 기준점과의 거리는 155.8mm다. 이는 모델의 고정 기준점이며 실물 TCP 보정은 아니다. 실행 코드와 좌표계 설명은 [7단계 문서](docs/STEP_07_TCP_FRAME.md)를 참고한다.
