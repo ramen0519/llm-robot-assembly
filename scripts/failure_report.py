@@ -22,6 +22,9 @@ class FailureCode(str, Enum):
     TCP_NOT_REACHED = "TCP_NOT_REACHED"
     NOT_SETTLED = "NOT_SETTLED"
     GRIPPER_STATE_INVALID = "GRIPPER_STATE_INVALID"
+    GRASP_NOT_CONFIRMED = "GRASP_NOT_CONFIRMED"
+    PART_LOST = "PART_LOST"
+    PLACEMENT_NOT_CONFIRMED = "PLACEMENT_NOT_CONFIRMED"
     SIMULATION_INVALID = "SIMULATION_INVALID"
     CANCELLED = "CANCELLED"
     INCOMPLETE_RECORD = "INCOMPLETE_RECORD"
@@ -107,13 +110,24 @@ def capture_observation(model, data, *, source="sim_ground_truth", kinematics_fr
                              "position_world_m": contact.pos.copy()})
             if not math.isfinite(distance) or not np.all(np.isfinite(contact.pos)):
                 reasons.append("non_finite_contact")
+    # Free joints contain metres and wxyz quaternions, not scalar joint angles.
+    scalar_hinges = bool(np.all(model.jnt_type == mujoco.mjtJoint.mjJNT_HINGE))
+    state = ({"qpos_rad": data.qpos.copy(), "qvel_rad_s": data.qvel.copy()} if scalar_hinges else {
+        "qpos": data.qpos.copy(), "qvel": data.qvel.copy(),
+        "joint_layout": [{"name": model.joint(i).name, "type": int(model.jnt_type[i]),
+                          "qpos_address": int(model.jnt_qposadr[i]), "dof_address": int(model.jnt_dofadr[i])}
+                         for i in range(model.njnt)],
+        "units": "hinge: rad, rad/s; free: xyz(m)+quaternion(wxyz), linear(m/s)+angular(rad/s)",
+    })
     return json_safe({
         "source": source,
         # A candidate's MjData.time does not mean that a robot moved to that time/pose.
         "simulation_time_s": float(data.time) if source == "sim_ground_truth" else None,
         "valid": not reasons, "invalid_reasons": sorted(set(reasons)),
-        "qpos_rad": data.qpos.copy(), "qvel_rad_s": data.qvel.copy(),
+        **state,
         "ctrl": data.ctrl.copy(), "tcp": tcp, "contacts": contacts,
+        "mocap_positions_world_m": data.mocap_pos.copy(),
+        "mocap_quaternions_wxyz": data.mocap_quat.copy(),
         "physics_warnings": warnings,
     })
 

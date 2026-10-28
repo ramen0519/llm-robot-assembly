@@ -107,7 +107,7 @@ class ArmPositionController:
         mujoco.mj_forward(self.model, self.gravity_data)
         return self.gravity_data.qfrc_bias[:6].copy()
 
-    def apply(self, data, reference):
+    def apply(self, data, reference, gripper_command=0.0):
         # tau = kp * (ctrl - q) - kd * qvel. This adds tau_gravity via the actuator.
         command = reference + self.gravity_torque(data) / self.kp
         bounds = self.model.actuator_ctrlrange[self.actuators]
@@ -117,7 +117,9 @@ class ArmPositionController:
                                violations=[{"metric": "arm_ctrl_rad", "observed": command,
                                             "allowed_ranges_rad": bounds}])
         data.ctrl[self.actuators] = command
-        data.ctrl[self.gripper_actuator] = 0.0  # Open; fingers still follow physical dynamics.
+        if not np.isfinite(gripper_command) or not 0 <= gripper_command <= 255:
+            raise FailureEvent(FailureCode.MODEL_OR_CONTROL_INVALID, "Gripper command must be in 0..255.")
+        data.ctrl[self.gripper_actuator] = gripper_command  # Fingers follow physical dynamics.
 
 
 def measure_motion(model, data, plan, reference, controller):
