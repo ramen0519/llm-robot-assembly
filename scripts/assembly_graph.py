@@ -1,0 +1,147 @@
+"""Serial LangGraph executor with explicit assembly/recovery policy handoff."""
+from copy import deepcopy
+from typing import TypedDict
+from langgraph.graph import END, START, StateGraph
+from langsmith import tracing_context
+
+from assembly_policy import ROLE_INSTRUCTIONS, ScriptedPolicy, allowed_skills, validate_proposal
+from failure_report import FailureCode, FailureEvent, json_safe
+from insertion_recovery import recover_alignment
+from pick_place_graph import _snapshot
+
+
+class AssemblyState(TypedDict):
+    status: str
+    observation: dict | None
+    observation_revision: int
+    active_role: str
+    action: dict | None
+    completed: list[str]
+    last_result: dict | None
+    verification: dict | None
+    failures: list[dict]
+    pending_failure: dict | None
+    recoveries: int
+    policy_calls: int
+    policy_mode: str
+    error: str | None
+
+
+def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, on_event=None,
+                       scenario='nominal', recovery_budget=1):
+    if mode not in ('single', 'roles') or scenario not in ('nominal', 'alignment_offset'):
+        raise ValueError('Unknown policy mode/scenario.')
+    if type(recovery_budget) is not int or recovery_budget not in (0, 1):
+        raise ValueError('This prototype permits at most one recovery.')
+    keys = ['single'] if mode == 'single' else ['assembly', 'recovery']
+    policies = policies or {key: ScriptedPolicy(key) for key in keys}
+    if set(policies) != set(keys):
+        raise ValueError('Policy mapping does not match selected mode.')
+    initial = {'status': 'running', 'observation': None, 'observation_revision': 0,
+               'active_role': 'assembly', 'action': None, 'completed': [], 'last_result': None,
+               'verification': None, 'failures': [], 'pending_failure': None, 'recoveries': 0,
+               'policy_calls': 0, 'policy_mode': mode, 'error': None}
+    fault_injected = False
+
+    def settle(state):
+        skills.settle()
+        return {}
+
+    def observe(state):
+        return {'observation': _snapshot(skills), 'observation_revision': state['observation_revision'] + 1,
+                'active_role': 'recovery' if state['pending_failure'] else 'assembly'}
+
+    def decide(state):
+        role = 'single' if mode == 'single' else state['active_role']
+        context = {'task_id': 'four_post_frame_first_joint/v1', 'part_id': skills.config['part']['id'],
+                   'target_id': skills.config['target']['id'], 'active_role': state['active_role'],
+                   'role_instruction': ROLE_INSTRUCTIONS[role], 'observation': state['observation'],
+                   'observation_revision': state['observation_revision'], 'completed': state['completed'],
+                   'failure': state['pending_failure'], 'failures': state['failures'],
+                   'recovery_budget_remaining': recovery_budget - state['recoveries'],
+                   'allowed_skills': allowed_skills(state['completed'], state['pending_failure'], state['recoveries'], recovery_budget)}
+        proposal = validate_proposal(policies[role].propose(deepcopy(context)), context)
+        return {'action': proposal, 'policy_calls': state['policy_calls'] + 1,
+                'last_result': None, 'verification': None}
+
+    def execute(state):
+        nonlocal fault_injected
+        a = state['action']
+        if a['observation_revision'] != state['observation_revision'] or state['observation'] != _snapshot(skills):
+            raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, 'Policy action is stale; observe again.')
+        name = a['skill']
+        if name == 'pick':
+            result = skills.pick(a['part_id'])
+        elif name == 'insert':
+            offset = [.006, 0.] if scenario == 'alignment_offset' and not fault_injected else None
+            fault_injected = True  # Scenario perturbation is explicit, separate from the policy.
+            result = skills.insert(a['part_id'], a['target_id'], alignment_offset_m=offset)
+        elif name == 'recover_alignment':
+            pending = state['pending_failure']
+            failure = FailureEvent(FailureCode(pending['failure_code']), pending['message'])
+            result = recover_alignment(skills, failure)
+        elif name == 'stop':
+            return {'status': 'stopped', 'error': a['reason']}
+        elif name == 'finish':
+            # Fresh current-state verification also required at terminal success.
+            row = skills.verifier.sample(skills.data, skills.motion.reference, allow_support=True, allow_grasp=False)
+            checks = skills.verifier.verify_insertion([row])
+            if state['completed'] != ['pick', 'insert']:
+                raise ValueError('Finish requires both verified actions.')
+            return {'status': 'success', 'error': None, 'verification': {'checks': checks, 'measurements': row}}
+        else:
+            raise ValueError('Unsupported executable action.')
+        return {'last_result': json_safe(result)}
+
+    def verify(state):
+        name, result = state['action']['skill'], state['last_result']
+        expected = {'pick': 'pick/v1', 'insert': 'insert_post/v1', 'recover_alignment': 'recover_alignment/v1'}[name]
+        if not isinstance(result, dict) or result.get('status') != 'success' or result.get('skill') != expected:
+            raise ValueError('Skill returned an invalid result; success cannot be self-declared.')
+        held = name != 'insert'
+        row = skills.verifier.sample(skills.data, skills.motion.reference, allow_support=True, allow_grasp=held)
+        if held:
+            if skills.motion.held_pose is None or row['supported'] or row['part_bottom_clearance_m'] < .05:
+                raise FailureEvent(FailureCode.GRASP_NOT_CONFIRMED, 'Expected a physically held/lifted part.')
+            skills.verifier.check_held(skills.data, row, skills.motion.held_pose)
+            checks = skills.verifier.verify_alignment(skills.data) if name == 'recover_alignment' else {'held_and_lifted': True}
+        else:
+            checks = skills.verifier.verify_insertion([row])
+        update = {'verification': {'source': 'sim_ground_truth', 'checks': checks, 'measurements': json_safe(row)}}
+        if name == 'recover_alignment':
+            update.update(pending_failure=None, recoveries=state['recoveries'] + 1, error=None)
+        else:
+            update['completed'] = [*state['completed'], name]
+        return update
+
+    def guarded(name, function):
+        def node(state):
+            try:
+                update = function(state)
+            except (Exception, KeyboardInterrupt) as error:
+                report = failure_handler(error)
+                recoverable = (name == 'execute' and state['action']['skill'] == 'insert'
+                               and report['failure_code'] == 'ALIGNMENT_OUT_OF_TOLERANCE'
+                               and state['recoveries'] < recovery_budget)
+                update = {'status': 'running' if recoverable else report['status'],
+                          'failures': [*state['failures'], report], 'pending_failure': report,
+                          'last_result': None, 'verification': None, 'error': str(error)}
+            current = {**state, **update}
+            if on_event:
+                on_event(json_safe({'node': name, 'status': current['status'], 'active_role': current['active_role'],
+                                   'observation_revision': current['observation_revision'], 'action': current['action'],
+                                   'completed': current['completed'], 'recoveries': current['recoveries'],
+                                   'simulation_time_s': float(skills.data.time), 'failure_count': len(current['failures'])}))
+            return update
+        return node
+
+    graph = StateGraph(AssemblyState)
+    for name, function in [('settle', settle), ('observe', observe), ('decide', decide), ('execute', execute), ('verify', verify)]:
+        graph.add_node(name, guarded(name, function))
+    graph.add_edge(START, 'settle')
+    for source, target in [('settle', 'observe'), ('observe', 'decide'), ('decide', 'execute'), ('verify', 'observe')]:
+        graph.add_conditional_edges(source, lambda state, target=target: target if state['status'] == 'running' else END, [target, END])
+    graph.add_conditional_edges('execute', lambda state: END if state['status'] != 'running' else (
+        'observe' if state['last_result'] is None else 'verify'), ['observe', 'verify', END])
+    with tracing_context(enabled=False):
+        return json_safe(graph.compile().invoke(initial, {'recursion_limit': 36}))
