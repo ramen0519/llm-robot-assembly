@@ -41,3 +41,6 @@ checkpoints/
 *.sqlite3-*
 *.log
 ~$*
+
+# Native MuJoCo diagnostics
+MUJOCO_LOG.TXT

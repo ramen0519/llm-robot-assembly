@@ -58,7 +58,8 @@ class WorkcellVerifier:
                                    violations=[{"metric": "penetration_m", "observed": maximum_penetration,
                                                 "maximum": 0.003}])
             force = np.zeros(6)
-            mujoco.mj_contactForce(self.model, data, index, force)
+            if not planned:
+                mujoco.mj_contactForce(self.model, data, index, force)
             loaded = contact.dist <= 0 and force[0] > 0.01
             support |= is_support and loaded
             if is_grasp and loaded:

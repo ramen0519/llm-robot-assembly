@@ -104,7 +104,13 @@ class ArmPositionController:
         # Only this calculation copy has zero velocity; never reset live qpos/qvel.
         self.gravity_data.qpos[:] = data.qpos
         self.gravity_data.qvel[:] = 0.0
-        mujoco.mj_forward(self.model, self.gravity_data)
+        # Only the rigid-body bias force is needed. A full forward pass also
+        # solves unrelated product contacts in this zero-velocity calculation
+        # copy, which can cause spurious Newton line-search warnings.
+        mujoco.mj_kinematics(self.model, self.gravity_data)
+        mujoco.mj_comPos(self.model, self.gravity_data)
+        mujoco.mj_comVel(self.model, self.gravity_data)
+        mujoco.mj_rne(self.model, self.gravity_data, 0, self.gravity_data.qfrc_bias)
         return self.gravity_data.qfrc_bias[:6].copy()
 
     def apply(self, data, reference, gripper_command=0.0):

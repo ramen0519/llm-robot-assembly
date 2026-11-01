@@ -11,6 +11,7 @@ from scipy.spatial.transform import Rotation, Slerp
 
 from failure_report import FailureCode, FailureEvent, capture_observation
 from move_tcp import ArmPositionController
+from simulation_warnings import checked_physics
 from solve_tcp_ik import pose_errors
 from view_tcp import TCP_SITE_NAME, read_tcp_pose
 from view_ur3e import JOINT_NAMES
@@ -45,12 +46,14 @@ class WorkcellMotion:
         self.plans = []
 
     def _candidate(self, qpos, allow_support, allow_grasp):
+        # A geometric candidate has no executed dynamics or measured contact force.
+        # Run the position/collision pipeline, not an unnecessary constraint-force solve.
         scratch = mujoco.MjData(self.model)
         scratch.qpos[:] = qpos
         # Moving obstacles are not encoded in qpos. Copy their current poses too.
         scratch.mocap_pos[:] = self.data.mocap_pos
         scratch.mocap_quat[:] = self.data.mocap_quat
-        mujoco.mj_forward(self.model, scratch)
+        mujoco.mj_fwdPosition(self.model, scratch)
         if self.held_pose is not None:
             # Prediction in a calculation copy ONLY. No weld/attachment on the live body.
             p, r = read_tcp_pose(scratch)
@@ -60,7 +63,7 @@ class WorkcellMotion:
             quat = np.empty(4)
             mujoco.mju_mat2Quat(quat, (r @ self.held_pose[1]).ravel())
             scratch.qpos[address + 3:address + 7] = quat
-            mujoco.mj_forward(self.model, scratch)
+            mujoco.mj_fwdPosition(self.model, scratch)
         try:
             self.verifier.contacts(scratch, allow_support=allow_support, allow_grasp=allow_grasp, planned=True)
         except FailureEvent as error:
@@ -150,9 +153,12 @@ class WorkcellMotion:
 
     def step(self, *, allow_support, allow_grasp):
         previous_time = float(self.data.time)
-        self.controller.apply(self.data, self.reference, self.gripper_command)
-        mujoco.mj_step(self.model, self.data)
-        mujoco.mj_forward(self.model, self.data)
+        with checked_physics('gravity_feedforward'):
+            self.controller.apply(self.data, self.reference, self.gripper_command)
+        with checked_physics('mj_step'):
+            mujoco.mj_step(self.model, self.data)
+        with checked_physics('mj_forward_measurement'):
+            mujoco.mj_forward(self.model, self.data)
         if not math.isclose(self.data.time, previous_time + self.dt, abs_tol=1e-8):
             raise FailureEvent(FailureCode.SIMULATION_INVALID, "Simulation time advanced incorrectly.")
         return self.sample(allow_support=allow_support, allow_grasp=allow_grasp)
