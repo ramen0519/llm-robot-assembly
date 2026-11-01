@@ -22,7 +22,9 @@ def insertion_config(dim=None):
     return config
 
 
-def build_insertion_scene(config=None, dim=None):
+def build_insertion_scene(config=None, dim=None, *, transfer_obstacle=False):
+    if type(transfer_obstacle) is not bool:
+        raise ValueError('transfer_obstacle must be a boolean test-scene option.')
     d = dim or FrameDimensions()
     d.validate()
     config = config or insertion_config(d)
@@ -38,6 +40,16 @@ def build_insertion_scene(config=None, dim=None):
         body.add_geom(name=BASE_NAME + '_' + box['name'], type=mujoco.mjtGeom.mjGEOM_BOX,
                       pos=box['center'], size=np.array(box['size']) / 2,
                       rgba=[.18, .42, .70, 1.], friction=config['contact']['friction'])
+    obstacle = None
+    if transfer_obstacle:
+        obstacle = {'name': 'assembly_transfer_obstacle', 'kind': 'fixed_test_sphere',
+                    'center_table_m': [-.010, -.125, .115], 'radius_m': .025, 'margin_m': .006}
+        center = table_to_world(config, obstacle['center_table_m'])
+        obstacle['center_world_m'] = center.tolist()
+        fixture = spec.worldbody.add_body(name=obstacle['name'], pos=center)
+        fixture.add_geom(name=obstacle['name'] + '_geom', type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                         size=[obstacle['radius_m'], 0., 0.], margin=obstacle['margin_m'],
+                         rgba=[.9, .15, .12, 1.])
     model, data = compile_workcell(spec)
     target = table_to_world(config, [*config['target']['xy_table_m'], d.socket_floor + d.post_height / 2])
     return model, data, config, {
@@ -49,4 +61,5 @@ def build_insertion_scene(config=None, dim=None):
         'nominal_insertion_depth_m': d.base_height - d.socket_floor,
         'nominal_side_clearance_m': (d.hole_width - d.post_width) / 2,
         'source': 'sim_ground_truth', 'fixture_status': 'base rigidly pre-fixtured',
+        **({'transport_test_obstacle': obstacle} if obstacle else {}),
     }

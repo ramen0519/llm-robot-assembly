@@ -90,7 +90,13 @@ class InsertionVerifier(WorkcellVerifier):
 
 
 class InsertionSkills(AssemblySkills):
-    def __init__(self, model, data, config, joint, on_sample=None, on_stage=None):
+    def __init__(self, model, data, config, joint, on_sample=None, on_stage=None, *,
+                 transport_strategy='direct', on_transport_preflight_failure=None):
+        if transport_strategy not in ('direct', 'direct_then_rrt'):
+            raise ValueError('Unknown insertion transport strategy.')
+        self.transport_strategy = transport_strategy
+        self.on_transport_preflight_failure = on_transport_preflight_failure
+        self.transport_attempts = []
         super().__init__(model, data, config, on_sample, on_stage)
         self.verifier = InsertionVerifier(model, config, joint)
         self.motion = WorkcellMotion(model, data, self.verifier, on_sample)
@@ -103,6 +109,29 @@ class InsertionSkills(AssemblySkills):
                                          for k, v in self.verifier.joint.items()}
         return observation
 
+    def _transfer(self, position, rotation):
+        # Opt-in only: existing assembly callers retain their direct motion.
+        if self.transport_strategy == 'direct':
+            return self.motion.move(position, rotation, allow_support=False, allow_grasp=True)
+        from loaded_transport import plan_loaded_transfer
+        attempt = {'part_id': self.config['part']['id'], 'stage': self.motion.stage,
+                   'start_time_s': float(self.data.time), 'status': 'planning', 'planning': None}
+        self.transport_attempts.append(attempt)
+        try:
+            plan, metadata = plan_loaded_transfer(self, position, rotation,
+                strategy=self.transport_strategy,
+                on_preflight_failure=self.on_transport_preflight_failure)
+            attempt['planning'] = metadata
+            rows = self.motion.execute(plan, allow_support=False, allow_grasp=True)
+            attempt['status'] = 'executed'
+            return rows
+        except (Exception, KeyboardInterrupt) as exc:
+            attempt['status'] = 'failed'
+            attempt['failure_code'] = getattr(exc, 'code', FailureCode.UNCLASSIFIED_ERROR).value
+            raise
+        finally:
+            attempt['end_time_s'] = float(self.data.time)
+
     def insert(self, part_id, target_id, *, alignment_offset_m=None):
         if (part_id != self.config['part']['id'] or target_id != self.config['target']['id']
                 or self.motion.held_pose is None):
@@ -114,7 +143,7 @@ class InsertionSkills(AssemblySkills):
         tcp_rotation = self.verifier.target_rotation @ held_r.T
         tcp_position = self.verifier.target_position - tcp_rotation @ held_p
         self.stage('insert_transfer')
-        self.motion.move(tcp_position + [offset[0], offset[1], LIFT_M], tcp_rotation, allow_support=False, allow_grasp=True)
+        self._transfer(tcp_position + [offset[0], offset[1], LIFT_M], tcp_rotation)
         self.stage('insert_alignment_check')
         self.verifier.verify_alignment(self.data)
         # Only the selected post may touch this fixed base. Robot/base remains forbidden.
