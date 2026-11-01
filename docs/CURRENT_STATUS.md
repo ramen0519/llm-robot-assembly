@@ -101,3 +101,5 @@ uv run --locked python scripts/preview_llm_request.py
 ## 저장과 Git
 
 실험 로그·PNG·OBJ·메모리·절차 등록본은 Git에서 제외한다. 로컬 실행 데이터는 `C:\dev\llm-robot-assembly\runs`, 메모리·절차는 `runtime` 아래에 있어 OneDrive 동기화 폴더 밖이다. 코드·환경 잠금 파일·단계 보고서는 현재 브랜치의 로컬 커밋에 남겼다. `main` 변경이나 원격 push는 하지 않았다.
+
+운반 전략 비교: [25B 동일 조건 집계](STEP_25B_TRANSPORT_COMPARISON.md)는 완료된 슬리브 실행의 직접 경로 실패와 대체 경로 성공을 비교한다. 설정·기록된 코드 지문·설치 수·물리 판정을 검사하며 LLM 비교로 집계하지 않는다.

@@ -285,3 +285,5 @@ uv run --locked python scripts/run_pick_place.py --check --snapshots --config co
 이동·스킬·검증·기록을 별도 파일로 나눴다. 현재 상태에서 Mink IK를 이어서 풀고, 운반 부품을 포함해 사전 경로와 실제 접촉을 검사한다. 막힌 경로를 우회하는 범용 탐색기, 자동 복구, 삽입, 카메라 인식은 아직 없다. 결과·실패 기록·이미지는 `runs/step12_14/<run_id>/`에 저장하며 Git에서 제외한다. 원리·판정 기준·검사 범위는 [12~14단계 설명서](docs/STEP_12_14_PICK_PLACE.md)를 참고한다.
 
 2026-10-28 기준 전체 회귀검사 33개가 통과했다. headless 물리 실행과 offscreen 렌더를 확인했으며, 이번 단계의 대화형 viewer 조작 검사는 수행하지 않았다.
+
+운반 전략 비교: [25B 동일 조건 집계](docs/STEP_25B_TRANSPORT_COMPARISON.md)는 완료된 슬리브 실행의 직접 경로 실패와 대체 경로 성공을 비교한다. 설정·기록된 코드 지문·설치 수·물리 판정을 검사하며 LLM 비교로 집계하지 않는다.
