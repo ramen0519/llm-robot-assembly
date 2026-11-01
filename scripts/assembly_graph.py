@@ -29,11 +29,14 @@ class AssemblyState(TypedDict):
 
 
 def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, on_event=None,
-                       scenario='nominal', recovery_budget=1, memory_lookup=None):
+                       scenario='nominal', recovery_budget=1, memory_lookup=None,
+                       task_id='four_post_frame_first_joint/v1', insert_result_skill='insert_post/v1'):
     if mode not in ('single', 'roles') or scenario not in ('nominal', 'alignment_offset'):
         raise ValueError('Unknown policy mode/scenario.')
     if type(recovery_budget) is not int or recovery_budget not in (0, 1):
         raise ValueError('This prototype permits at most one recovery.')
+    if insert_result_skill not in ('insert_post/v1', 'insert_sleeve/v1', 'seat_cover/v1'):
+        raise ValueError('Unknown insertion result contract.')
     keys = ['single'] if mode == 'single' else ['assembly', 'recovery']
     policies = policies or {key: ScriptedPolicy(key) for key in keys}
     if set(policies) != set(keys):
@@ -57,7 +60,7 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
 
     def decide(state):
         role = 'single' if mode == 'single' else state['active_role']
-        context = {'task_id': 'four_post_frame_first_joint/v1', 'part_id': skills.config['part']['id'],
+        context = {'task_id': task_id, 'insert_result_skill': insert_result_skill, 'part_id': skills.config['part']['id'],
                    'target_id': skills.config['target']['id'], 'active_role': state['active_role'],
                    'role_instruction': ROLE_INSTRUCTIONS[role], 'observation': state['observation'],
                    'observation_revision': state['observation_revision'], 'completed': state['completed'],
@@ -100,7 +103,7 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
 
     def verify(state):
         name, result = state['action']['skill'], state['last_result']
-        expected = {'pick': 'pick/v1', 'insert': 'insert_post/v1', 'recover_alignment': 'recover_alignment/v1'}[name]
+        expected = {'pick': 'pick/v1', 'insert': insert_result_skill, 'recover_alignment': 'recover_alignment/v1'}[name]
         if not isinstance(result, dict) or result.get('status') != 'success' or result.get('skill') != expected:
             raise ValueError('Skill returned an invalid result; success cannot be self-declared.')
         held = name != 'insert'

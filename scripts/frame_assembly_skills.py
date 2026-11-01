@@ -1,0 +1,184 @@
+"""Compound-part support/grasp checks and measured insertion skills for the frame."""
+import math
+import mujoco
+import numpy as np
+from assembly_skills import DOWNWARD_TCP, HOVER_M
+from failure_report import FailureCode, FailureEvent
+from insertion_skills import InsertionSkills, InsertionVerifier
+from workcell_motion import WorkcellMotion
+from workcell_scene import part_name
+from workcell_verification import WorkcellVerifier, rotation_error
+
+
+class FrameVerifier(InsertionVerifier):
+    def __init__(self, model, active, registry, installed):
+        entry = registry[active]
+        super().__init__(model, entry['config'], entry['joint'])
+        self.active, self.registry, self.installed = active, registry, installed
+        self.mating_motion = False
+        self.geom_part = {model.geom(g).id: name for name, e in registry.items() for g in e['collision_geom_names']}
+
+    def support_relation(self, part, counterpart):
+        entry = self.registry[part]
+        if counterpart == self.table_geom:
+            return part not in self.installed
+        supports = entry['support_ids']
+        if counterpart == self.floor_geom:
+            return 'base_floor' in supports
+        if counterpart in self.fixture_geoms:
+            return 'base_top' in supports
+        return self.geom_part.get(counterpart) in supports
+
+    def mating_relation(self, part, counterpart):
+        target = 'base' if counterpart in self.fixture_geoms else self.geom_part.get(counterpart)
+        return target in self.registry[part]['mating_ids']
+
+    def contacts(self, data, *, allow_support, allow_grasp, planned=False):
+        table_support_force, fixture_support_force = 0., 0.
+        sides = {'left': False, 'right': False}
+        penetration, max_force = 0., 0.
+        for index, c in enumerate(data.contact):
+            a, b = int(c.geom1), int(c.geom2)
+            pa, pb = self.geom_part.get(a), self.geom_part.get(b)
+            active_geom, counterpart = (a, b) if pa == self.active else ((b, a) if pb == self.active else (None, None))
+            grasp = active_geom is not None and counterpart in self.pads
+            fixture_mating = active_geom is not None and self.mating_enabled and self.mating_relation(self.active, counterpart)
+            active_table = active_geom is not None and counterpart == self.table_geom
+            allowed = (allow_grasp and grasp) or (allow_support and active_table) or fixture_mating
+            if active_geom is None:
+                # Previously installed pairs retain only their declared mating/support contacts.
+                allowed = any(part is not None and (
+                    (other == self.table_geom and part not in self.installed)
+                    or (part in self.installed and self.mating_relation(part, other)))
+                    for part, other in ((pa, b), (pb, a)))
+            if not allowed:
+                raise FailureEvent(FailureCode.PLANNED_CONTACT if planned else FailureCode.UNEXPECTED_CONTACT,
+                                   f'Forbidden compound-part contact: {self.model.geom(a).name or self.model.body(self.model.geom_bodyid[a]).name}, {self.model.geom(b).name or self.model.body(self.model.geom_bodyid[b]).name}')
+            penetration = max(penetration, -float(c.dist))
+            if penetration > .003:
+                raise FailureEvent(FailureCode.PLANNED_CONTACT if planned else FailureCode.UNEXPECTED_CONTACT,
+                                   'Compound-part penetration exceeded 3 mm.')
+            force = np.zeros(6)
+            if not planned:
+                mujoco.mj_contactForce(self.model, data, index, force)
+            loaded = c.dist <= 0 and force[0] > .01
+            vertical = abs(float(c.frame[2])) > .9
+            if active_geom is not None:
+                if c.dist <= 0 and vertical and active_table:
+                    table_support_force += max(0., float(force[0])) * abs(float(c.frame[2]))
+                if c.dist <= 0 and vertical and fixture_mating and self.support_relation(self.active, counterpart):
+                    fixture_support_force += max(0., float(force[0])) * abs(float(c.frame[2]))
+                if grasp and loaded:
+                    sides['left' if 'left' in self.pads[counterpart] else 'right'] = True
+                if fixture_mating:
+                    max_force = max(max_force, float(force[0]))
+        if not planned and max_force > 8.:
+            raise FailureEvent(FailureCode.INSERTION_CONTACT_LIMIT, 'Compound-part contact-point normal force exceeded 8 N.',
+                               violations=[{'fixture_contact_force_n': max_force}])
+        return {'supported': table_support_force + fixture_support_force > .01, 'fixture_supported': fixture_support_force > .01,
+                'left_contact': sides['left'], 'right_contact': sides['right'],
+                'penetration_m': penetration, 'fixture_contact_force_n': max_force}
+
+    def verify_other_parts(self, data, *, require_settled=True):
+        # One fresh scan per physical sample, not one full scan per inactive part.
+        # No cache: mutations at the same simulation time must still be observed.
+        support_forces = {}
+        for index, contact in enumerate(data.contact):
+            if contact.dist > 0 or abs(float(contact.frame[2])) <= .9:
+                continue
+            a, b = int(contact.geom1), int(contact.geom2)
+            supported_names = [part for part, other in ((self.geom_part.get(a), b), (self.geom_part.get(b), a))
+                               if part is not None and self.support_relation(part, other)]
+            if supported_names:
+                force = np.zeros(6)
+                mujoco.mj_contactForce(self.model, data, index, force)
+                for part in supported_names:
+                    support_forces[part] = support_forces.get(part, 0.) + max(0., float(force[0])) * abs(float(contact.frame[2]))
+        for name, entry in self.registry.items():
+            if name == self.active:
+                continue
+            body = data.body(part_name(entry['config']))
+            velocity = data.joint(part_name(entry['config']) + '_free').qvel
+            expected = entry['joint']['target_part_center_world_m'] if name in self.installed else entry['spawn_center_world_m']
+            error = float(np.linalg.norm(body.xpos - expected))
+            angle = rotation_error(body.xmat.reshape(3, 3), entry['joint']['target_part_rotation_world'])
+            supported = support_forces.get(name, 0.) > .01
+            # Contact can briefly move a supported mating partner. Keep pose/support
+            # bounds unchanged; the final verification window still requires rest.
+            transient_mate = (not require_settled and name in self.installed
+                              and name in self.registry[self.active]['mating_ids'])
+            linear_limit, angular_limit = (.010, .100) if transient_mate else (.001, .010)
+            if data.time > 1. and (not supported or error > .001 or angle > math.radians(1)
+                                   or np.linalg.norm(velocity[:3]) > linear_limit or np.linalg.norm(velocity[3:]) > angular_limit):
+                raise FailureEvent(FailureCode.PLACEMENT_NOT_CONFIRMED, f'Other component is not preserved: {name}',
+                                   violations=[{'part_id': name, 'installed': name in self.installed,
+                                                'position_error_m': error, 'orientation_error_rad': angle, 'supported': bool(supported),
+                                                'linear_speed_m_s': float(np.linalg.norm(velocity[:3])),
+                                                'angular_speed_rad_s': float(np.linalg.norm(velocity[3:])),
+                                                'linear_limit_m_s': linear_limit, 'angular_limit_rad_s': angular_limit,
+                                                'require_settled': not transient_mate}])
+
+    def sample(self, data, reference, *, allow_support, allow_grasp):
+        row = WorkcellVerifier.sample(self, data, reference, allow_support=allow_support, allow_grasp=allow_grasp)
+        row['insertion_depth_m'] = self.joint['socket_rim_z_world_m'] - self.table_z - row['part_bottom_clearance_m']
+        self.verify_other_parts(data, require_settled=not self.mating_motion)
+        return row
+
+    def verify_insertion(self, rows):
+        checks = super().verify_insertion(rows)
+        checks['declared_mating_support'] = checks.pop('socket_floor_support')
+        return checks
+
+
+class FrameSkills(InsertionSkills):
+    def __init__(self, model, data, active, registry, installed, on_sample=None, on_stage=None):
+        entry = registry[active]
+        super().__init__(model, data, entry['config'], entry['joint'], on_sample, on_stage)
+        self.registry, self.installed, self.active = registry, installed, active
+        self.verifier = FrameVerifier(model, active, registry, installed)
+        self.motion = WorkcellMotion(model, data, self.verifier, on_sample)
+
+    def stage(self, name):
+        self.verifier.mating_motion = name in ('insert_lower', 'insert_release', 'insert_retreat')
+        super().stage(name)
+
+    def observe(self, *, serialize=True):
+        observation = super().observe(serialize=serialize)
+        observation['all_parts'] = {name: {'position_world_m': self.data.body(part_name(e['config'])).xpos.tolist(),
+                                           'quaternion_wxyz': self.data.body(part_name(e['config'])).xquat.tolist(),
+                                           'installed': name in self.installed}
+                                    for name, e in self.registry.items()}
+        return observation
+
+    def approach(self, part_id):
+        if part_id != self.active or self.motion.held_pose is not None or part_id in self.installed:
+            raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, 'Need a known uninstalled free component and empty gripper.')
+        entry = self.registry[part_id]
+        if not set(entry['requires']) <= self.installed | {'base'}:
+            raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, 'Component prerequisites are not assembled.')
+        body = self.data.body(self.verifier.part_body)
+        rotation = body.xmat.reshape(3, 3).copy()
+        row = self.verifier.sample(self.data, self.motion.reference, allow_support=True, allow_grasp=False)
+        if (np.dot(rotation[:, 2], [0, 0, 1]) < math.cos(math.radians(1))
+                or not row['supported'] or row['part_speed_m_s'] > .001 or row['pad_gap_mm'] < 80):
+            raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, 'Need a settled upright component and open gripper.')
+        offset = np.asarray(entry['grasp_offset_part_m'])
+        grasp = body.xpos.copy() + rotation @ offset
+        orientation = rotation @ DOWNWARD_TCP
+        self.stage('approach_hover')
+        self.motion.move(grasp + [0., 0., HOVER_M], orientation)
+        body = self.data.body(self.verifier.part_body)
+        if (np.linalg.norm(body.xpos + body.xmat.reshape(3, 3) @ offset - grasp) > .001
+                or rotation_error(body.xmat.reshape(3, 3), rotation) > math.radians(1)):
+            raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, 'Component moved during approach.')
+        self.stage('approach_lower')
+        rows = self.motion.move(grasp, orientation)
+        result = {'skill': 'approach_component/v1', 'status': 'success', 'part_id': part_id,
+                  'final_tcp_error_m': rows[-1]['tcp_position_error_m'], 'observation': self.observe()}
+        self.results.append(result)
+        return result
+
+    def insert(self, part_id, target_id, **kwargs):
+        result = super().insert(part_id, target_id, **kwargs)
+        result['skill'] = {'post': 'insert_post/v1', 'sleeve': 'insert_sleeve/v1', 'cover': 'seat_cover/v1'}[self.registry[part_id]['kind']]
+        return result

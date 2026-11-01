@@ -45,13 +45,24 @@ def perforated_plate(width, height, hole_width, centers, floor=0.):
     boxes = []
     if floor:
         boxes.append({'name': 'floor', 'center': [0., 0., floor / 2], 'size': [width, width, floor]})
-    for i, (a, b) in enumerate(zip(xs, xs[1:])):
-        for j, (c, d) in enumerate(zip(ys, ys[1:])):
-            x, y = (a + b) / 2, (c + d) / 2
-            if any(abs(x - hx) < hole_width / 2 - 1e-10 and abs(y - hy) < hole_width / 2 - 1e-10 for hx, hy in centers):
-                continue
-            boxes.append({'name': f'wall_{i}_{j}', 'center': [x, y, (height + floor) / 2],
-                          'size': [b - a, d - c, height - floor]})
+    # Merge consecutive solid cells along X. The solid volume and open holes
+    # stay identical, while rings use four bars instead of eight small boxes.
+    for j, (c, e) in enumerate(zip(ys, ys[1:])):
+        y = (c + e) / 2
+        run_start = None
+        for i in range(len(xs)):
+            solid_cell = False
+            if i < len(xs) - 1:
+                x = (xs[i] + xs[i + 1]) / 2
+                solid_cell = not any(abs(x - hx) < hole_width / 2 - 1e-10 and abs(y - hy) < hole_width / 2 - 1e-10
+                                     for hx, hy in centers)
+            if solid_cell and run_start is None:
+                run_start = i
+            if not solid_cell and run_start is not None:
+                a, b = xs[run_start], xs[i]
+                boxes.append({'name': f'wall_{run_start}_{j}', 'center': [(a + b) / 2, y, (height + floor) / 2],
+                              'size': [b - a, e - c, height - floor]})
+                run_start = None
     return boxes
 
 
@@ -71,7 +82,7 @@ def product_parts(dim=None):
                       'boxes': perforated_plate(d.sleeve_width, d.sleeve_height, d.hole_width, [(0., 0.)])})
     # Integrated raised tab is part of the cover, not an eleventh product part.
     cover = perforated_plate(d.base_width, d.cover_height, d.hole_width, centers)
-    cover.append({'name': 'grip_tab', 'center': [0., -d.base_width / 2 + .015, d.cover_height + .015],
+    cover.append({'name': 'grip_tab', 'center': [0., 0., d.cover_height + .015],
                   'size': [.030, .025, .030]})
     parts.append({'id': 'cover', 'kind': 'cover', 'fixed': False,
                   'position_product_m': [0., 0., d.base_height + d.sleeve_height],
@@ -99,7 +110,7 @@ def export_product(output_dir, dim=None):
     # Never silently replace an experiment's CAD.
     if any(output.iterdir()):
         raise ValueError('CAD output directory must be empty.')
-    manifest = {'schema_version': 1, 'candidate_id': 'four_post_frame_v1', 'units': 'metre',
+    manifest = {'schema_version': 1, 'candidate_id': 'four_post_frame_v2_center_grip', 'units': 'metre',
                 'frame': 'product_base_bottom_center', 'product_parts': 10, 'robot_installations': 9,
                 'status': 'development_candidate', 'robot_execution_validated': False,
                 'fixture': 'base rigidly pre-fixtured; fixture engineering not validated',
