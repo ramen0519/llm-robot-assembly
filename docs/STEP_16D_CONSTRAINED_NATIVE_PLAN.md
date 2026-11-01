@@ -37,6 +37,6 @@ uv run --locked python -m unittest discover -s tests -p test_native_asap.py -v
 
 `post_1 → sleeve_1 → post_2 → sleeve_2 → post_3 → post_4 → sleeve_4 → sleeve_3 → cover`
 
-현재 로봇 입력 경계에서 이 10부품 후보의 CAD·좌표·선행조건도 다시 검사할 수 있다. 그 검사는 모터 명령이나 9개 부품의 로봇 조립을 의미하지 않는다. 실제 외부 후보 연결의 작은 물리 시험은 [16E](STEP_16E_PLANNER_TO_ROBOT.md)에 별도로 기록한다.
+현재 로봇 입력 경계에서도 이 10부품 후보의 CAD·좌표·선행조건 재검사가 통과했다. 같은 실행 폴더의 `robot_candidate_admission.json`에 기록했으며, sim 0초·설치 0개로 모터 명령을 보내지 않은 검사다. 실제 외부 후보 연결의 작은 물리 시험은 [16E](STEP_16E_PLANNER_TO_ROBOT.md)에 별도로 기록한다.
 
 기존 전체 MuJoCo 조립은 기둥 4개를 먼저 설치하는 순서다. 위 외부 후보의 순서는 다르므로 기존 전체 성공을 이 후보의 실행 성공으로 복사하지 않는다. 정규화된 RedMax 물리와 m 단위 MuJoCo 로봇 물리도 같은 검증으로 취급하지 않는다.
