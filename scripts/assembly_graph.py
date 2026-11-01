@@ -66,7 +66,7 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
                    'role_instruction': ROLE_INSTRUCTIONS[role], 'observation': state['observation'],
                    'observation_revision': state['observation_revision'], 'completed': state['completed'],
                    'failure': state['pending_failure'], 'failures': state['failures'],
-                   'experiences': state['experiences'],
+                   'experiences': state['experiences'], 'last_verification': state['verification'],
                    'recovery_budget_remaining': recovery_budget - state['recoveries'],
                    'allowed_skills': allowed_skills(state['completed'], state['pending_failure'], state['recoveries'], recovery_budget)}
         proposal = validate_proposal(policies[role].propose(deepcopy(context)), context)
@@ -135,6 +135,8 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
                 update = {'status': 'running' if recoverable else report['status'],
                           'failures': [*state['failures'], report], 'pending_failure': report,
                           'last_result': None, 'verification': None, 'error': str(error)}
+            if name == 'decide' and 'policy_calls' not in update:
+                update['policy_calls'] = state['policy_calls'] + 1  # Failed attempts also count.
             current = {**state, **update}
             if on_event:
                 on_event(json_safe({'node': name, 'status': current['status'], 'active_role': current['active_role'],

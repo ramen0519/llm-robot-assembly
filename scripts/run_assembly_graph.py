@@ -1,4 +1,4 @@
-"""Offline scripted policy baseline in LangGraph; no paid model calls."""
+"""LangGraph assembly with an offline baseline or explicitly configured single LLM policy."""
 import argparse
 import csv
 import json
@@ -15,27 +15,39 @@ from run_pick_place import AssemblyRecorder, save_snapshot
 from workcell_scene import ROOT
 
 
-def execute_trial(*, mode='roles', scenario='nominal', output_root=None, snapshots=False, use_memory=False, recovery_budget=1, recipe=None):
+def execute_trial(*, mode='roles', scenario='nominal', output_root=None, snapshots=False, use_memory=False, recovery_budget=1, recipe=None, llm_config_path=None):
     if mode not in ('single', 'roles') or scenario not in ('nominal', 'alignment_offset'):
         raise ValueError('Unknown policy mode/scenario.')
     if type(recovery_budget) is not int or recovery_budget not in (0, 1):
         raise ValueError('Recovery budget must be 0 or 1.')
+    if llm_config_path is not None and (mode != 'single' or recipe is not None):
+        raise ValueError('First live LLM integration supports single policy only, without recipe replay.')
+    policy_kind = 'openai_responses' if llm_config_path is not None else ('recipe_replay' if recipe else 'scripted')
     wall_started = time.monotonic()
     recorder = AssemblyRecorder(output_root or ROOT / 'runs/step21', skill='assembly_graph/v1',
                                 validation_profile='post_socket_insertion/v1')
     skills, state = None, None
     reports = []
     status, error = 'failed', None
+    meter, client, live_policy, llm_config = None, None, None, None
     try:
+        if llm_config_path is not None:
+            from llm_runtime import load_llm_config, create_openai_client, ApiLedger
+            from openai_policy import OpenAIAssemblyPolicy
+            llm_config = load_llm_config(llm_config_path).validate(live=True)
+            client = create_openai_client(llm_config)
+            meter = ApiLedger(llm_config, recorder.run_dir / 'llm_events.jsonl')
+            live_policy = OpenAIAssemblyPolicy(llm_config, client, meter)
         model, data, config, joint = build_insertion_scene()
         write_json(recorder.run_dir / 'resolved_config.json', {
             'config': config, 'joint': joint, 'scenario': scenario, 'mode': mode,
             'recovery_budget': recovery_budget, 'memory_enabled': use_memory,
-            'policy_kind': 'recipe_replay' if recipe else 'scripted', 'models': None, 'api_calls': 0,
+            'policy_kind': policy_kind, 'models': {'single': llm_config.model} if llm_config else None,
+            'llm_config': llm_config.public() if llm_config else None, 'api_calls_at_start': 0,
             'environment': 'simulation', 'observation_source': 'sim_ground_truth', 'simulator_version': mujoco.__version__})
         from experience_memory import condition_fingerprint, read_json
         fingerprint = condition_fingerprint(read_json(recorder.run_dir / 'resolved_config.json'))
-        policies = None
+        policies = {'single': live_policy} if live_policy else None
         if recipe is not None:
             from skill_recipes import RecipeReplayPolicy, validate_candidate
             validate_candidate(recipe)
@@ -78,12 +90,18 @@ def execute_trial(*, mode='roles', scenario='nominal', output_root=None, snapsho
     except (Exception, KeyboardInterrupt) as exc:
         status = recorder.fail(exc, skills, 21)
         error = str(exc)
+    finally:
+        if client is not None:
+            client.close()
+    usage = meter.summary() if meter is not None else {'api_calls': 0, 'input_tokens': 0, 'output_tokens': 0, 'api_cost': 0}
     result = {'status': status, 'error': error, 'run_dir': str(recorder.run_dir), 'graph_state': state,
-              'policy_kind': 'recipe_replay' if recipe else 'scripted', 'policy_mode': mode,
+              'policy_kind': policy_kind, 'policy_mode': mode,
               'recipe_candidate_id': recipe['candidate_id'] if recipe else None, 'scenario': scenario, 'memory_enabled': use_memory,
-              'api_calls': 0, 'input_tokens': 0, 'output_tokens': 0, 'api_cost': 0,
+              'api_calls': usage['api_calls'], 'input_tokens': usage['input_tokens'],
+              'output_tokens': usage['output_tokens'], 'api_cost': usage['api_cost'],
+              'llm_usage': usage if llm_config_path is not None else None,
               'wall_elapsed_s': time.monotonic() - wall_started, 'recovery_budget': recovery_budget,
-              'physical_product_parts': 2, 'robot_installed_parts': 1 if status == 'success' else 0,
+              'physical_product_parts': 2 if skills else 0, 'product_parts_goal': 2, 'robot_installed_parts': 1 if status == 'success' else 0,
               'simulated_seconds': float(skills.data.time) if skills else None, 'samples': recorder.samples,
               'results': skills.results if skills else [], 'plans': skills.motion.plans if skills else []}
     write_json(recorder.run_dir / 'result.json', result)
@@ -93,11 +111,12 @@ def execute_trial(*, mode='roles', scenario='nominal', output_root=None, snapsho
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--llm-config', type=Path, help='Explicit live single-policy config; omitted means scripted/offline')
     parser.add_argument('--mode', choices=['single', 'roles'], default='roles')
     parser.add_argument('--scenario', choices=['nominal', 'alignment_offset'], default='nominal')
     parser.add_argument('--snapshots', action='store_true')
     parser.add_argument('--recovery-budget', type=int, choices=[0, 1], default=1)
     parser.add_argument('--memory', action='store_true', help='Retrieve matching development experiences')
     args = parser.parse_args()
-    result = execute_trial(mode=args.mode, scenario=args.scenario, snapshots=args.snapshots, use_memory=args.memory, recovery_budget=args.recovery_budget)
+    result = execute_trial(mode=args.mode, scenario=args.scenario, snapshots=args.snapshots, use_memory=args.memory, recovery_budget=args.recovery_budget, llm_config_path=args.llm_config)
     raise SystemExit(0 if result['status'] == 'success' else 1)
