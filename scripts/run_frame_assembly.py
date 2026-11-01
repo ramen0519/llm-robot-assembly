@@ -1,20 +1,22 @@
 """Physical frame assembly with compound sleeves, prerequisite checks and full-state verification."""
 import argparse
 import csv
+from contextlib import nullcontext
 import hashlib
 import json
 import time
 import mujoco
+import mujoco.viewer
 from pathlib import Path
-from failure_report import write_json
+from failure_report import FailureCode, FailureEvent, write_json
 from frame_assembly_scene import build_frame_scene
 from frame_assembly_skills import FrameSkills
 from run_insertion import INSERTION_TRACE_FIELDS
 from run_pick_place import AssemblyRecorder, save_snapshot
-from workcell_scene import ROOT
+from workcell_scene import ROOT, set_workcell_camera
 
 
-def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='scripted', scenario='nominal'):
+def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='scripted', scenario='nominal', show_viewer=False):
     if mode not in ('scripted', 'single', 'roles') or scenario not in ('nominal', 'first_alignment_offset'):
         raise ValueError('Unknown orchestration mode/scenario')
     if mode == 'scripted' and scenario != 'nominal':
@@ -36,14 +38,26 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
             'policy_kind': 'scripted', 'orchestration': mode, 'scenario': scenario, 'recovery_budget': remaining_recoveries, 'api_calls': 0, 'simulator_version': mujoco.__version__,
             'implementation_sha256': {name: hashlib.sha256((ROOT / 'scripts' / name).read_bytes()).hexdigest()
                 for name in ('frame_assembly_scene.py', 'frame_assembly_skills.py', 'workcell_motion.py', 'run_frame_assembly.py')}})
-        with recorder.trace_path.open('w', newline='', encoding='utf-8') as stream, (recorder.run_dir / 'graph_events.jsonl').open('w', encoding='utf-8') as events:
+        viewer_context = mujoco.viewer.launch_passive(model, data) if show_viewer else nullcontext(None)
+        with viewer_context as viewer, recorder.trace_path.open('w', newline='', encoding='utf-8') as stream, (recorder.run_dir / 'graph_events.jsonl').open('w', encoding='utf-8') as events:
+            clock = {'last_draw': -1., 'wall': time.monotonic(), 'sim': float(data.time)}
+            if viewer:
+                set_workcell_camera(viewer.cam, next(iter(registry.values()))['config'])
             writer = csv.DictWriter(stream, fieldnames=['active_part_id', *INSERTION_TRACE_FIELDS])
             writer.writeheader()
             def sample(row):
                 writer.writerow({'active_part_id': skills.active, **row})
                 recorder.remember(skills, row)
+                if viewer:
+                    if not viewer.is_running():
+                        raise FailureEvent(FailureCode.CANCELLED, 'Viewer closed.')
+                    if data.time - clock['last_draw'] >= 1 / 30:
+                        viewer.sync()
+                        time.sleep(max(0., clock['wall'] + data.time - clock['sim'] - time.monotonic()))
+                        clock['last_draw'] = float(data.time)
             def stage(name):
                 stream.flush()
+                clock.update(wall=time.monotonic(), sim=float(data.time))
                 print(f'[{data.time:8.3f} s] {skills.active}: {name}', flush=True)
             for active, entry in registry.items():
                 skills = FrameSkills(model, data, active, registry, installed, sample, stage)
@@ -106,8 +120,9 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--parts', type=int, choices=range(2, 11), default=6)
     parser.add_argument('--snapshots', action='store_true')
+    parser.add_argument('--viewer', action='store_true', help='Open the passive MuJoCo viewer for this physical episode')
     parser.add_argument('--mode', choices=['scripted', 'single', 'roles'], default='scripted')
     parser.add_argument('--scenario', choices=['nominal', 'first_alignment_offset'], default='nominal')
     args = parser.parse_args()
-    result = execute_trial(product_count=args.parts, snapshots=args.snapshots, mode=args.mode, scenario=args.scenario)
+    result = execute_trial(product_count=args.parts, snapshots=args.snapshots, mode=args.mode, scenario=args.scenario, show_viewer=args.viewer)
     raise SystemExit(0 if result['status'] == 'success' else 1)
