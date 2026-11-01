@@ -1,9 +1,11 @@
-"""Run stages 12 (approach), 13 (pick) or 14 (pick and place) in MuJoCo."""
+"""Run stages 12-14 directly, or stage 15 through a deterministic LangGraph."""
 
 import argparse
 from contextlib import nullcontext
 import csv
 import hashlib
+import json
+from importlib.metadata import version
 import math
 from pathlib import Path
 import struct
@@ -83,7 +85,7 @@ class AssemblyRecorder:
                     "desired_part_rotation_world": skills.verifier.target_rotation}
         status = "cancelled" if event.code == FailureCode.CANCELLED else "failed"
         report = FailureReport(
-            schema_version=2, run_id=self.run_id, action_id=phase, skill="scripted_pick_place/v1",
+            schema_version=2, run_id=self.run_id, action_id=phase, skill=("langgraph_pick_place/v1" if through == 15 else "scripted_pick_place/v1"),
             environment="simulation", status=status, failure_code=event.code, message=str(event),
             phase=event.phase or phase, detected_at_utc=utc_now(),
             simulation_time_s=float(skills.data.time) if skills else None,
@@ -96,11 +98,13 @@ class AssemblyRecorder:
 
 
 def execute_trial(config_path=DEFAULT_CONFIG, *, through=14, headless=True, snapshots=False,
-                  output_root=ROOT / "runs/step12_14", on_stage=None):
-    if through not in (12, 13, 14):
-        raise ValueError("through must be 12, 13 or 14")
+                  output_root=None, on_stage=None, on_graph_event=None):
+    if through not in (12, 13, 14, 15):
+        raise ValueError("through must be 12, 13, 14 or 15")
+    if output_root is None:
+        output_root = ROOT / ("runs/step15" if through == 15 else "runs/step12_14")
     recorder = AssemblyRecorder(output_root)
-    skills = None
+    skills, graph_state = None, None
     status, error_message = "failed", None
     try:
         config_path = Path(config_path)
@@ -111,7 +115,9 @@ def execute_trial(config_path=DEFAULT_CONFIG, *, through=14, headless=True, snap
             "sha256": hashlib.sha256(config_path.read_bytes()).hexdigest(),
             "simulator": "MuJoCo", "version": mujoco.__version__, "timestep_s": float(model.opt.timestep),
             "robot": "ur3e", "gripper": "robotiq_2f85", "through_step": through,
-            "environment": "simulation", "observation_source": "sim_ground_truth"})
+            "environment": "simulation", "observation_source": "sim_ground_truth",
+            "orchestration": "langgraph" if through == 15 else "scripted",
+            "langgraph_version": version("langgraph") if through == 15 else None})
         context = nullcontext(None) if headless else mujoco.viewer.launch_passive(model, data)
         with context as viewer, recorder.trace_path.open("w", newline="", encoding="utf-8") as stream:
             writer = csv.DictWriter(stream, fieldnames=TRACE_FIELDS, extrasaction="raise")
@@ -139,18 +145,33 @@ def execute_trial(config_path=DEFAULT_CONFIG, *, through=14, headless=True, snap
                 # Planning/render time does not count as physical time in the viewer.
                 clock["wall"], clock["sim"] = time.monotonic(), float(data.time)
             skills = AssemblySkills(model, data, config, sample, stage)
-            skills.settle()
-            part_id = config["part"]["id"]
-            if through == 12:
-                skills.approach(part_id)
+            if through == 15:
+                from pick_place_graph import run_pick_place_graph
+                def fail_graph(error):
+                    recorder.fail(error, skills, through)
+                    return json.loads((recorder.run_dir / "failure_report.json").read_text(encoding="utf-8"))
+                with (recorder.run_dir / "graph_events.jsonl").open("w", encoding="utf-8") as events:
+                    def record_event(event):
+                        events.write(json.dumps(event, ensure_ascii=False, allow_nan=False) + "\n")
+                        events.flush()
+                        print(f"[graph] {event['node']}: {event['status']}", flush=True)
+                        if on_graph_event:
+                            on_graph_event(event, skills)
+                    graph_state = run_pick_place_graph(skills, failure_handler=fail_graph, on_event=record_event)
+                status, error_message = graph_state["status"], graph_state["error"]
             else:
-                skills.pick(part_id)
-                if through == 14:
-                    skills.place(part_id, config["target"]["id"])
-            if snapshots:
+                skills.settle()
+                part_id = config["part"]["id"]
+                if through == 12:
+                    skills.approach(part_id)
+                else:
+                    skills.pick(part_id)
+                    if through == 14:
+                        skills.place(part_id, config["target"]["id"])
+                status = "success"
+            if snapshots and status == "success":
                 save_snapshot(model, data, config, recorder.run_dir / "final.png")
-            status = "success"
-            if viewer:
+            if viewer and status == "success":
                 print("Verification complete. Static final preview; close the window to finish.", flush=True)
                 try:
                     while viewer.is_running():
@@ -165,8 +186,16 @@ def execute_trial(config_path=DEFAULT_CONFIG, *, through=14, headless=True, snap
             status = recorder.fail(error, skills, through)
         except Exception as storage_error:
             raise RuntimeError(f"Original failure: {error_message}; could not save failure report: {storage_error}") from error
+    if through == 15:
+        if graph_state is None or graph_state["status"] != status:
+            graph_state = {**(graph_state or {}), "status": status, "error": error_message, "phase": "runner",
+                           "failure_report": json.loads((recorder.run_dir / "failure_report.json").read_text(encoding="utf-8"))}
+        write_json(recorder.run_dir / "graph_state.json", graph_state)
     result = {"schema_version": 2, "run_id": recorder.run_id, "environment": "simulation",
-              "through_step": through, "status": status, "finished_at_utc": utc_now(),
+              "through_step": through,
+              "graph_state_file": "graph_state.json" if through == 15 else None,
+              "graph_events_file": "graph_events.jsonl" if through == 15 and (recorder.run_dir / "graph_events.jsonl").exists() else None,
+              "status": status, "finished_at_utc": utc_now(),
               "error": error_message, "trace_file": recorder.trace_path.name,
               "failure_report_file": None if status == "success" else "failure_report.json",
               "validated_samples": recorder.samples,
@@ -182,7 +211,7 @@ def execute_trial(config_path=DEFAULT_CONFIG, *, through=14, headless=True, snap
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
-    parser.add_argument("--through", type=int, choices=(12, 13, 14), default=14)
+    parser.add_argument("--through", type=int, choices=(12, 13, 14, 15), default=14)
     parser.add_argument("--check", action="store_true", help="Headless physical simulation and verification.")
     parser.add_argument("--snapshots", action="store_true", help="Save real MuJoCo rendered states under ignored runs/.")
     args = parser.parse_args()
