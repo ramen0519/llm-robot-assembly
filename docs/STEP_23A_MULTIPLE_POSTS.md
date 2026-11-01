@@ -45,3 +45,4 @@ uv run --locked python -m unittest discover -s tests -p test_multi_post.py -v
 - `workcell_scene.py`: 선언한 자유 부품 수에 맞춰 모델 크기 검증.
 
 현재 다부품 runner는 규칙 순서이며, 앞서 만든 LangGraph/메모리 runner는 아직 첫 단일 결합 대상이다. 두 기능을 이미 통합했다고 표현하지 않는다. 다부품 전체 복구·LLM 계획·외부 분해 플래너 실시간 호출·전역 장애물 우회 경로는 후속 작업이다.
+`--posts 4` 실제 물리 실행도 success: `runs/step23/20261101T044814_410434Z_74698dd0`. 받침대 포함 5부품, 로봇 설치 4개, 시뮬레이션 약 406.752초. 마지막 기둥 후에도 앞서 조립한 모든 기둥의 상태를 검사했다.
