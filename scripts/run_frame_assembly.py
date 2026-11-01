@@ -21,7 +21,7 @@ from workcell_verification import rotation_error
 
 def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='scripted', scenario='nominal', show_viewer=False,
                   transport_strategy='direct', transfer_obstacle=False, observer=None,
-                  transport_replan_budget=0, empty_approach_strategy=None, policies=None):
+                  transport_replan_budget=0, empty_approach_strategy=None, policies=None, planner_candidate=None):
     if mode not in ('scripted', 'single', 'roles') or scenario not in ('nominal', 'first_alignment_offset'):
         raise ValueError('Unknown orchestration mode/scenario')
     if mode == 'scripted' and scenario != 'nominal':
@@ -30,10 +30,10 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
         raise ValueError('Invalid transport option.')
     if type(product_count) is not int or not 2 <= product_count <= 10:
         raise ValueError('Product count must include base plus one to nine free components.')
-    if type(transport_replan_budget) is not int or transport_replan_budget not in (0, 1, 2):
-        raise ValueError('The episode permits zero, one or two policy-selected transport replans.')
-    if transport_replan_budget and (mode == 'scripted' or transport_strategy != 'direct' or product_count not in (2, 3)):
-        raise ValueError('Policy replanning currently supports graph mode, direct transport and one or two posts only.')
+    if type(transport_replan_budget) is not int or not 0 <= transport_replan_budget <= 9:
+        raise ValueError('The episode permits at most nine transport replans, with at most one per installation.')
+    if transport_replan_budget and (mode == 'scripted' or transport_strategy != 'direct'):
+        raise ValueError('Policy replanning requires graph mode and direct transport.')
     if empty_approach_strategy not in (None, 'direct', 'direct_then_rrt'):
         raise ValueError('Unknown empty-gripper approach strategy.')
     if policies is not None and (mode == 'scripted' or not isinstance(policies, dict)
@@ -47,14 +47,20 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
     graph_states, failures = {}, []
     transport_attempts, empty_approach_attempts, motion_preflight_failures, part_metrics = {}, {}, [], {}
     policy_replan_attempts = {}
+    planner_provenance = None
     remaining_replans = transport_replan_budget
     remaining_recoveries = 1 if mode != 'scripted' else 0
     from assembly_policy import ScriptedPolicy
     policies = policies if policies is not None else {key: ScriptedPolicy(key) for key in (['single'] if mode == 'single' else ['assembly', 'recovery'])}
     try:
         model, data, registry = build_frame_scene(product_count, transfer_obstacle=transfer_obstacle)
+        if planner_candidate is not None:
+            from planner_candidate_input import load_robot_candidate
+            order, planner_provenance = load_robot_candidate(planner_candidate, registry)
+            registry = {name: registry[name] for name in order}
         write_json(recorder.run_dir / 'resolved_config.json', {
             'registry': registry, 'environment': 'simulation', 'observation_source': 'sim_ground_truth',
+            'planner_provenance': planner_provenance,
             'product_parts_present': product_count, 'robot_installations_goal': product_count - 1,
             'transport_strategy': transport_strategy, 'transfer_obstacle': transfer_obstacle,
             'empty_approach_strategy': empty_approach_strategy,
@@ -63,7 +69,7 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
             'implementation_sha256': {name: hashlib.sha256((ROOT / 'scripts' / name).read_bytes()).hexdigest()
                 for name in ('frame_assembly_scene.py', 'frame_assembly_skills.py', 'workcell_motion.py', 'run_frame_assembly.py',
                              'insertion_scene.py', 'insertion_skills.py', 'loaded_transport.py', 'joint_path_planner.py', 'empty_approach.py',
-                             'assembly_graph.py', 'assembly_policy.py', 'rejected_insert.py')}})
+                             'assembly_graph.py', 'assembly_policy.py', 'rejected_insert.py', 'planner_candidate_input.py')}})
         viewer_context = mujoco.viewer.launch_passive(model, data) if show_viewer else nullcontext(None)
         with viewer_context as viewer, recorder.trace_path.open('w', newline='', encoding='utf-8') as stream, (recorder.run_dir / 'graph_events.jsonl').open('w', encoding='utf-8') as events:
             clock = {'last_draw': -1., 'wall': time.monotonic(), 'sim': float(data.time)}
@@ -169,6 +175,7 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
         status = recorder.fail(exc, skills, 23)
         error = str(exc)
     result = {'status': status, 'error': error, 'run_dir': str(recorder.run_dir),
+              'planner_provenance': planner_provenance, 'execution_order': [r['part_id'] for r in results],
               'product_parts_present': product_count, 'robot_installations_goal': product_count - 1,
               'completed_installations': sorted(installed), 'robot_installed_parts': len(installed),
               'ten_part_assembly_complete': status == 'success' and product_count == 10,
@@ -201,12 +208,14 @@ if __name__ == '__main__':
     parser.add_argument('--transport-strategy', choices=['direct', 'direct_then_rrt'], default='direct')
     parser.add_argument('--transfer-obstacle', action='store_true', help='Fixed transfer test obstacle, present from episode start')
     parser.add_argument('--empty-approach-strategy', choices=['direct', 'direct_then_rrt'], help='Defaults to the transport strategy; only open-gripper hover uses this option')
-    parser.add_argument('--transport-replan-budget', type=int, choices=[0, 1, 2], default=0, help='Global episode budget; graph mode and at most two posts only')
+    parser.add_argument('--transport-replan-budget', type=int, choices=range(10), default=0, help='Global episode budget; graph mode and at most one replan per installation')
     parser.add_argument('--viewer', action='store_true', help='Open the passive MuJoCo viewer for this physical episode')
     parser.add_argument('--mode', choices=['scripted', 'single', 'roles'], default='scripted')
     parser.add_argument('--scenario', choices=['nominal', 'first_alignment_offset'], default='nominal')
+    parser.add_argument('--planner-candidate', type=Path, help='Native candidate whose CAD, frames and evidence are rechecked before motion')
     args = parser.parse_args()
     result = execute_trial(product_count=args.parts, snapshots=args.snapshots, mode=args.mode, scenario=args.scenario,
         show_viewer=args.viewer, transport_strategy=args.transport_strategy, transfer_obstacle=args.transfer_obstacle,
-        empty_approach_strategy=args.empty_approach_strategy, transport_replan_budget=args.transport_replan_budget)
+        empty_approach_strategy=args.empty_approach_strategy, transport_replan_budget=args.transport_replan_budget,
+        planner_candidate=args.planner_candidate)
     raise SystemExit(0 if result['status'] == 'success' else 1)

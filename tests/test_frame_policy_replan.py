@@ -163,8 +163,8 @@ class FramePolicyReplanTests(unittest.TestCase):
         self.assertEqual(result['api_calls'], 0)
 
     def test_scope_and_independent_approach_options(self):
-        for changes in ({'transport_replan_budget': True}, {'transport_replan_budget': 3},
-                        {'transport_replan_budget': 1, 'product_count': 4},
+        for changes in ({'transport_replan_budget': True}, {'transport_replan_budget': 10},
+                        {'transport_replan_budget': 1, 'product_count': 11},
                         {'transport_replan_budget': 1, 'mode': 'scripted'},
                         {'transport_replan_budget': 1, 'transport_strategy': 'direct_then_rrt'},
                         {'empty_approach_strategy': 'unknown'}, {'policies': {'single': object()}}):
@@ -177,6 +177,19 @@ class FramePolicyReplanTests(unittest.TestCase):
         self.assertEqual(independent.transport_strategy, 'direct')
         self.assertEqual(independent.empty_approach_strategy, 'direct_then_rrt')
         self.assertEqual(data.time, 0.)
+
+    def test_full_frame_budget_starts_without_counting_preassembled_parts(self):
+        def observer(skills):
+            self.assertEqual(len(skills.registry), 9)
+            self.assertEqual(skills.installed, set())
+            self.assertEqual(skills.data.time, 0.)
+            raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, 'Stop before full-frame motion for scope inspection.')
+        with tempfile.TemporaryDirectory() as temporary:
+            result = execute_trial(product_count=10, mode='single', transport_replan_budget=9,
+                empty_approach_strategy='direct_then_rrt', observer=observer, output_root=temporary)
+        self.assertEqual(result['status'], 'failed')
+        self.assertEqual(result['robot_installed_parts'], 0)
+        self.assertEqual((result['transport_replans'], result['transport_replan_budget_remaining']), (0, 9))
 
 
 if __name__ == '__main__':
