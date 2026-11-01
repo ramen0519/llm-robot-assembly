@@ -16,8 +16,12 @@ ROLE_INSTRUCTIONS = {
 }
 
 
-def allowed_skills(completed, pending_failure, recoveries, recovery_budget):
+def allowed_skills(completed, pending_failure, recoveries, recovery_budget, *, transport_replan_available=False,
+                   transport_replans=0, transport_replan_budget=0):
     if pending_failure:
+        if (pending_failure['failure_code'] == 'PLANNED_CONTACT' and completed == ['pick']
+                and transport_replan_available and transport_replans < transport_replan_budget):
+            return ['replan_insert', 'stop']
         return (['recover_alignment', 'stop']
                 if pending_failure['failure_code'] == 'ALIGNMENT_OUT_OF_TOLERANCE' and recoveries < recovery_budget
                 else ['stop'])

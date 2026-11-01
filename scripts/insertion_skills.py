@@ -97,6 +97,8 @@ class InsertionSkills(AssemblySkills):
         self.transport_strategy = transport_strategy
         self.on_transport_preflight_failure = on_transport_preflight_failure
         self.transport_attempts = []
+        self.replan_attempts = []
+        self._rejected_insert = None
         super().__init__(model, data, config, on_sample, on_stage)
         self.verifier = InsertionVerifier(model, config, joint)
         self.motion = WorkcellMotion(model, data, self.verifier, on_sample)
@@ -109,19 +111,67 @@ class InsertionSkills(AssemblySkills):
                                          for k, v in self.verifier.joint.items()}
         return observation
 
-    def _transfer(self, position, rotation):
-        # Opt-in only: existing assembly callers retain their direct motion.
-        if self.transport_strategy == 'direct':
-            return self.motion.move(position, rotation, allow_support=False, allow_grasp=True)
+    def insert_replan_available(self, error=None):
+        return self._rejected_insert is not None and self._rejected_insert.available(self, error)
+
+    def insert_replan_context(self):
+        return self._rejected_insert.summary() if self.insert_replan_available() else None
+
+    def replan_insert(self, part_id, target_id):
+        rejected = self._rejected_insert
+        self._rejected_insert = None  # Consume even when a stale request is rejected.
+        if (rejected is None or not rejected.available(self)
+                or part_id != rejected.intent['part_id'] or target_id != rejected.intent['target_id']):
+            raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID,
+                               'Need an unchanged, unexecuted insert-transfer rejection before policy replanning.')
+        attempt = {'source': rejected.summary(), 'status': 'started', 'start_time_s': float(self.data.time),
+                   'transport_executed': False}
+        self.replan_attempts.append(attempt)
+        previous_attempts = len(self.transport_attempts)
+        try:
+            # Recheck the current physical grasp in the existing transport planner.
+            # Preserve the original intent, including an explicit scenario perturbation.
+            result = self.insert(part_id, target_id, alignment_offset_m=rejected.intent['alignment_offset_m'],
+                                 transport_strategy='direct_then_rrt')
+            attempt['status'] = 'success'
+            return result
+        except (Exception, KeyboardInterrupt) as error:
+            attempt['status'] = 'failed'
+            attempt['failure_code'] = getattr(error, 'code', FailureCode.UNCLASSIFIED_ERROR).value
+            raise
+        finally:
+            attempt['end_time_s'] = float(self.data.time)
+            transfers = self.transport_attempts[previous_attempts:]
+            # A failed executor may already have issued commands. Do not label it unexecuted.
+            attempt['transport_executed'] = any(a['execution_started'] for a in transfers)
+            attempt['transport_completed'] = any(a['status'] == 'executed' for a in transfers)
+
+    def _transfer(self, position, rotation, *, strategy=None, intent=None):
+        strategy = self.transport_strategy if strategy is None else strategy
+        if strategy == 'direct':
+            from rejected_insert import capture_transport_state, RejectedInsert
+            before = capture_transport_state(self) if intent is not None else None
+            try:
+                plan = self.motion.plan(position, rotation, allow_support=False, allow_grasp=True)
+            except FailureEvent as error:
+                if before is not None:
+                    rejected = RejectedInsert(error, before, intent, position, rotation)
+                    if rejected.available(self):
+                        self._rejected_insert = rejected
+                raise
+            # This executor is reached only after the complete plan passed preflight.
+            return self.motion.execute(plan, allow_support=False, allow_grasp=True)
         from loaded_transport import plan_loaded_transfer
         attempt = {'part_id': self.config['part']['id'], 'stage': self.motion.stage,
-                   'start_time_s': float(self.data.time), 'status': 'planning', 'planning': None}
+                   'start_time_s': float(self.data.time), 'status': 'planning', 'planning': None,
+                   'execution_started': False}
         self.transport_attempts.append(attempt)
         try:
             plan, metadata = plan_loaded_transfer(self, position, rotation,
-                strategy=self.transport_strategy,
+                strategy=strategy,
                 on_preflight_failure=self.on_transport_preflight_failure)
             attempt['planning'] = metadata
+            attempt['execution_started'] = True
             rows = self.motion.execute(plan, allow_support=False, allow_grasp=True)
             attempt['status'] = 'executed'
             return rows
@@ -132,7 +182,10 @@ class InsertionSkills(AssemblySkills):
         finally:
             attempt['end_time_s'] = float(self.data.time)
 
-    def insert(self, part_id, target_id, *, alignment_offset_m=None):
+    def insert(self, part_id, target_id, *, alignment_offset_m=None, transport_strategy=None):
+        self._rejected_insert = None
+        if transport_strategy is not None and transport_strategy not in ('direct', 'direct_then_rrt'):
+            raise ValueError('Unknown insertion transport strategy override.')
         if (part_id != self.config['part']['id'] or target_id != self.config['target']['id']
                 or self.motion.held_pose is None):
             raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, 'Insertion needs a currently held known part.')
@@ -143,7 +196,8 @@ class InsertionSkills(AssemblySkills):
         tcp_rotation = self.verifier.target_rotation @ held_r.T
         tcp_position = self.verifier.target_position - tcp_rotation @ held_p
         self.stage('insert_transfer')
-        self._transfer(tcp_position + [offset[0], offset[1], LIFT_M], tcp_rotation)
+        self._transfer(tcp_position + [offset[0], offset[1], LIFT_M], tcp_rotation, strategy=transport_strategy,
+                       intent={'part_id': part_id, 'target_id': target_id, 'alignment_offset_m': offset.tolist()})
         self.stage('insert_alignment_check')
         self.verifier.verify_alignment(self.data)
         # Only the selected post may touch this fixed base. Robot/base remains forbidden.

@@ -23,7 +23,8 @@ def compact_context(context):
         raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, 'Need a valid simulation observation for this policy.')
     w = o['workcell']
     keys = ('task_id', 'part_id', 'target_id', 'active_role', 'observation_revision', 'completed',
-            'allowed_skills', 'recovery_budget_remaining', 'successful_recoveries', 'condition_fingerprint')
+            'allowed_skills', 'recovery_budget_remaining', 'successful_recoveries', 'condition_fingerprint',
+            'transport_replans', 'transport_replan_budget_remaining', 'transport_replan')
     packet = {key: context.get(key) for key in keys}
     packet['observation'] = {'source': o['source'], 'simulation_time_s': o['simulation_time_s'],
                              'tcp': o['tcp'], 'part': w['part'], 'target': w['target'],

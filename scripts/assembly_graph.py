@@ -22,6 +22,7 @@ class AssemblyState(TypedDict):
     failures: list[dict]
     pending_failure: dict | None
     recoveries: int
+    transport_replans: int
     policy_calls: int
     policy_mode: str
     error: str | None
@@ -30,11 +31,13 @@ class AssemblyState(TypedDict):
 
 def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, on_event=None,
                        scenario='nominal', recovery_budget=1, memory_lookup=None,
-                       task_id='four_post_frame_first_joint/v1', insert_result_skill='insert_post/v1', condition_fingerprint=None):
+                       task_id='four_post_frame_first_joint/v1', insert_result_skill='insert_post/v1', condition_fingerprint=None, transport_replan_budget=0):
     if mode not in ('single', 'roles') or scenario not in ('nominal', 'alignment_offset'):
         raise ValueError('Unknown policy mode/scenario.')
     if type(recovery_budget) is not int or recovery_budget not in (0, 1):
         raise ValueError('This prototype permits at most one recovery.')
+    if type(transport_replan_budget) is not int or transport_replan_budget not in (0, 1):
+        raise ValueError('At most one policy-selected transport replan is supported.')
     if insert_result_skill not in ('insert_post/v1', 'insert_sleeve/v1', 'seat_cover/v1'):
         raise ValueError('Unknown insertion result contract.')
     keys = ['single'] if mode == 'single' else ['assembly', 'recovery']
@@ -43,7 +46,7 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
         raise ValueError('Policy mapping does not match selected mode.')
     initial = {'status': 'running', 'observation': None, 'observation_revision': 0,
                'active_role': 'assembly', 'action': None, 'completed': [], 'last_result': None,
-               'verification': None, 'failures': [], 'pending_failure': None, 'recoveries': 0,
+               'verification': None, 'failures': [], 'pending_failure': None, 'recoveries': 0, 'transport_replans': 0,
                'policy_calls': 0, 'policy_mode': mode, 'error': None, 'experiences': []}
     fault_injected = False
 
@@ -68,7 +71,12 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
                    'failure': state['pending_failure'], 'failures': state['failures'],
                    'experiences': state['experiences'], 'last_verification': state['verification'],
                    'recovery_budget_remaining': recovery_budget - state['recoveries'],
-                   'allowed_skills': allowed_skills(state['completed'], state['pending_failure'], state['recoveries'], recovery_budget)}
+                   'transport_replans': state['transport_replans'],
+                   'transport_replan_budget_remaining': transport_replan_budget - state['transport_replans'],
+                   'transport_replan': skills.insert_replan_context() if transport_replan_budget else None,
+                   'allowed_skills': allowed_skills(state['completed'], state['pending_failure'], state['recoveries'], recovery_budget,
+                       transport_replan_available=skills.insert_replan_available() if transport_replan_budget else False,
+                       transport_replans=state['transport_replans'], transport_replan_budget=transport_replan_budget)}
         proposal = validate_proposal(policies[role].propose(deepcopy(context)), context)
         return {'action': proposal, 'policy_calls': state['policy_calls'] + 1,
                 'last_result': None, 'verification': None}
@@ -85,6 +93,8 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
             offset = [.006, 0.] if scenario == 'alignment_offset' and not fault_injected else None
             fault_injected = True  # Scenario perturbation is explicit, separate from the policy.
             result = skills.insert(a['part_id'], a['target_id'], alignment_offset_m=offset)
+        elif name == 'replan_insert':
+            result = skills.replan_insert(a['part_id'], a['target_id'])
         elif name == 'recover_alignment':
             pending = state['pending_failure']
             failure = FailureEvent(FailureCode(pending['failure_code']), pending['message'])
@@ -104,10 +114,10 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
 
     def verify(state):
         name, result = state['action']['skill'], state['last_result']
-        expected = {'pick': 'pick/v1', 'insert': insert_result_skill, 'recover_alignment': 'recover_alignment/v1'}[name]
+        expected = {'pick': 'pick/v1', 'insert': insert_result_skill, 'replan_insert': insert_result_skill, 'recover_alignment': 'recover_alignment/v1'}[name]
         if not isinstance(result, dict) or result.get('status') != 'success' or result.get('skill') != expected:
             raise ValueError('Skill returned an invalid result; success cannot be self-declared.')
-        held = name != 'insert'
+        held = name not in ('insert', 'replan_insert')
         row = skills.verifier.sample(skills.data, skills.motion.reference, allow_support=True, allow_grasp=held)
         if held:
             if skills.motion.held_pose is None or row['supported'] or row['part_bottom_clearance_m'] < .05:
@@ -120,7 +130,9 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
         if name == 'recover_alignment':
             update.update(pending_failure=None, recoveries=state['recoveries'] + 1, error=None)
         else:
-            update['completed'] = [*state['completed'], name]
+            update['completed'] = [*state['completed'], 'insert' if name == 'replan_insert' else name]
+            if name == 'replan_insert':
+                update.update(pending_failure=None, error=None)
         return update
 
     def guarded(name, function):
@@ -129,12 +141,18 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
                 update = function(state)
             except (Exception, KeyboardInterrupt) as error:
                 report = failure_handler(error)
-                recoverable = (name == 'execute' and state['action']['skill'] == 'insert'
-                               and report['failure_code'] == 'ALIGNMENT_OUT_OF_TOLERANCE'
-                               and state['recoveries'] < recovery_budget)
+                insertion_action = name == 'execute' and state['action']['skill'] in ('insert', 'replan_insert')
+                recoverable = insertion_action and (
+                    (isinstance(error, FailureEvent) and error.code == FailureCode.ALIGNMENT_OUT_OF_TOLERANCE
+                     and report['failure_code'] == 'ALIGNMENT_OUT_OF_TOLERANCE' and state['recoveries'] < recovery_budget)
+                    or (report['failure_code'] == 'PLANNED_CONTACT'
+                        and state['transport_replans'] < transport_replan_budget
+                        and skills.insert_replan_available(error)))
                 update = {'status': 'running' if recoverable else report['status'],
                           'failures': [*state['failures'], report], 'pending_failure': report,
                           'last_result': None, 'verification': None, 'error': str(error)}
+            if name == 'execute' and state['action']['skill'] == 'replan_insert':
+                update['transport_replans'] = state['transport_replans'] + 1
             if name == 'decide' and 'policy_calls' not in update:
                 update['policy_calls'] = state['policy_calls'] + 1  # Failed attempts also count.
             current = {**state, **update}
@@ -142,6 +160,7 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
                 on_event(json_safe({'node': name, 'status': current['status'], 'active_role': current['active_role'],
                                    'observation_revision': current['observation_revision'], 'action': current['action'],
                                    'completed': current['completed'], 'recoveries': current['recoveries'],
+                                   'transport_replans': current['transport_replans'],
                                    'simulation_time_s': float(skills.data.time), 'failure_count': len(current['failures']),
                                    'experience_ids': [r['record_id'] for r in current['experiences']]}))
             return update

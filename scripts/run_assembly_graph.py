@@ -17,11 +17,18 @@ from run_pick_place import AssemblyRecorder, save_snapshot
 from workcell_scene import ROOT
 
 
-def execute_trial(*, mode='roles', scenario='nominal', output_root=None, snapshots=False, use_memory=False, recovery_budget=1, recipe=None, llm_config_path=None, transport_strategy='direct', transfer_obstacle=False, observer=None):
+def execute_trial(*, mode='roles', scenario='nominal', output_root=None, snapshots=False, use_memory=False, recovery_budget=1, recipe=None, llm_config_path=None, transport_strategy='direct', transfer_obstacle=False, observer=None, transport_replan_budget=0, policies=None):
     if mode not in ('single', 'roles') or scenario not in ('nominal', 'alignment_offset'):
         raise ValueError('Unknown policy mode/scenario.')
     if type(recovery_budget) is not int or recovery_budget not in (0, 1):
         raise ValueError('Recovery budget must be 0 or 1.')
+    if type(transport_replan_budget) is not int or transport_replan_budget not in (0, 1):
+        raise ValueError('Transport replan budget must be 0 or 1.')
+    if transport_replan_budget and (transport_strategy != 'direct' or recipe is not None):
+        raise ValueError('Policy replanning starts with direct transport and is outside recorded recipe replay.')
+    if policies is not None and (llm_config_path is not None or recipe is not None
+            or any(getattr(p, 'kind', None) != 'scripted' for p in policies.values())):
+        raise ValueError('Injected policy hooks must be labelled scripted and cannot override live/recipe accounting.')
     if llm_config_path is not None and (mode != 'single' or recipe is not None):
         raise ValueError('First live LLM integration supports single policy only, without recipe replay.')
     if transport_strategy not in ('direct', 'direct_then_rrt') or type(transfer_obstacle) is not bool:
@@ -48,14 +55,14 @@ def execute_trial(*, mode='roles', scenario='nominal', output_root=None, snapsho
         model, data, config, joint = build_insertion_scene(transfer_obstacle=transfer_obstacle)
         write_json(recorder.run_dir / 'resolved_config.json', {
             'config': config, 'joint': joint, 'scenario': scenario, 'mode': mode,
-            'recovery_budget': recovery_budget, 'memory_enabled': use_memory,
+            'recovery_budget': recovery_budget, 'transport_replan_budget': transport_replan_budget, 'memory_enabled': use_memory,
             'transport_strategy': transport_strategy, 'transfer_obstacle': transfer_obstacle,
             'policy_kind': policy_kind, 'models': {'single': llm_config.model} if llm_config else None,
             'llm_config': llm_config.public() if llm_config else None, 'api_calls_at_start': 0,
             'environment': 'simulation', 'observation_source': 'sim_ground_truth', 'simulator_version': mujoco.__version__})
         from experience_memory import condition_fingerprint, read_json
         fingerprint = condition_fingerprint(read_json(recorder.run_dir / 'resolved_config.json'))
-        policies = {'single': live_policy} if live_policy else None
+        policies = {'single': live_policy} if live_policy else policies
         if recipe is not None:
             from skill_recipes import RecipeReplayPolicy, validate_candidate
             validate_candidate(recipe)
@@ -108,7 +115,7 @@ def execute_trial(*, mode='roles', scenario='nominal', output_root=None, snapsho
                 transport_strategy=transport_strategy, on_transport_preflight_failure=preflight_failure)
             if observer:
                 observer(skills)  # Local test observer; never exposed through CLI or policy tools.
-            state = run_assembly_graph(skills, failure_handler=failure_handler, mode=mode, scenario=scenario, on_event=event, memory_lookup=lookup, recovery_budget=recovery_budget, policies=policies, condition_fingerprint=fingerprint)
+            state = run_assembly_graph(skills, failure_handler=failure_handler, mode=mode, scenario=scenario, on_event=event, memory_lookup=lookup, recovery_budget=recovery_budget, policies=policies, condition_fingerprint=fingerprint, transport_replan_budget=transport_replan_budget)
             status, error = state['status'], state['error']
             if snapshots:
                 save_snapshot(model, data, config, recorder.run_dir / 'final.png')
@@ -124,6 +131,8 @@ def execute_trial(*, mode='roles', scenario='nominal', output_root=None, snapsho
               'transport_strategy': transport_strategy, 'transfer_obstacle': transfer_obstacle,
               'transport_preflight_failures': preflight_reports,
               'transport_attempts': skills.transport_attempts if skills else [], 'transfer_metrics': transfer_metrics,
+              'transport_replan_budget': transport_replan_budget,
+              'policy_replan_attempts': skills.replan_attempts if skills else [],
               'recipe_candidate_id': recipe['candidate_id'] if recipe else None, 'scenario': scenario, 'memory_enabled': use_memory,
               'api_calls': usage['api_calls'], 'input_tokens': usage['input_tokens'],
               'output_tokens': usage['output_tokens'], 'api_cost': usage['api_cost'],
@@ -145,8 +154,9 @@ if __name__ == '__main__':
     parser.add_argument('--snapshots', action='store_true')
     parser.add_argument('--transport-strategy', choices=['direct', 'direct_then_rrt'], default='direct')
     parser.add_argument('--transfer-obstacle', action='store_true', help='Fixed obstacle from scene initialization; first-joint test only')
+    parser.add_argument('--transport-replan-budget', type=int, choices=[0, 1], default=0, help='Opt-in policy choice after an unexecuted transport rejection')
     parser.add_argument('--recovery-budget', type=int, choices=[0, 1], default=1)
     parser.add_argument('--memory', action='store_true', help='Retrieve matching development experiences')
     args = parser.parse_args()
-    result = execute_trial(mode=args.mode, scenario=args.scenario, snapshots=args.snapshots, use_memory=args.memory, recovery_budget=args.recovery_budget, llm_config_path=args.llm_config, transport_strategy=args.transport_strategy, transfer_obstacle=args.transfer_obstacle)
+    result = execute_trial(mode=args.mode, scenario=args.scenario, snapshots=args.snapshots, use_memory=args.memory, recovery_budget=args.recovery_budget, llm_config_path=args.llm_config, transport_strategy=args.transport_strategy, transfer_obstacle=args.transfer_obstacle, transport_replan_budget=args.transport_replan_budget)
     raise SystemExit(0 if result['status'] == 'success' else 1)

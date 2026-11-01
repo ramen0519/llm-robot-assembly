@@ -2,6 +2,8 @@
 
 최신 통합 검증: [23G 10부품 우회·복구 조립](docs/STEP_23G_FULL_FRAME_DETOUR.md)에서 고정 장애물과 첫 정렬 실패를 포함해 로봇 설치 9/9를 확인했다. 현재 single은 규칙 정책이며 API 호출은 0회다. 실제 LLM 판단과 외부 플래너의 이 제품 계획 생성은 남아 있다.
 
+후속 [21C 정책 운반 재계획](docs/STEP_21C_POLICY_TRANSPORT_REPLAN.md)은 첫 결합에서 실행 전 경로 실패를 정책에 전달하고, 재관측 후 우회 재계획 또는 중단을 선택하게 한다. 규칙 정책의 우회→정렬 복구→물리 삽입을 검증했으며 실제 LLM 판단 결과는 아니다. 실행: `uv run --locked python scripts/run_assembly_graph.py --mode single --transfer-obstacle --transport-replan-budget 1 --scenario alignment_offset --snapshots`.
+
 **2026-11-01 진행:** 시뮬레이션만 개발 중이다. 기존 분해 플래너는 조립 후보를 주는 외부 모듈로 두고, 물리 조립 실행·실패 복구·경험 재사용을 구현한다. 최신 상태와 한계는 [현재 진행 보고서](docs/CURRENT_STATUS.md), 전체 순서는 [개발 계획](docs/ASSEMBLY_EXECUTION_ROADMAP.md)을 참고한다.
 
 MuJoCo에서 조립 작업을 계획·실행·검증하고, 성공과 실패 경험을 재사용하는 LLM 기반 로봇 조립 졸업프로젝트.
