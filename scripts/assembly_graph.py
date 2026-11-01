@@ -30,7 +30,7 @@ class AssemblyState(TypedDict):
 
 def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, on_event=None,
                        scenario='nominal', recovery_budget=1, memory_lookup=None,
-                       task_id='four_post_frame_first_joint/v1', insert_result_skill='insert_post/v1'):
+                       task_id='four_post_frame_first_joint/v1', insert_result_skill='insert_post/v1', condition_fingerprint=None):
     if mode not in ('single', 'roles') or scenario not in ('nominal', 'alignment_offset'):
         raise ValueError('Unknown policy mode/scenario.')
     if type(recovery_budget) is not int or recovery_budget not in (0, 1):
@@ -60,7 +60,8 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
 
     def decide(state):
         role = 'single' if mode == 'single' else state['active_role']
-        context = {'task_id': task_id, 'insert_result_skill': insert_result_skill, 'part_id': skills.config['part']['id'],
+        context = {'task_id': task_id, 'insert_result_skill': insert_result_skill,
+                   'condition_fingerprint': condition_fingerprint, 'successful_recoveries': state['recoveries'], 'part_id': skills.config['part']['id'],
                    'target_id': skills.config['target']['id'], 'active_role': state['active_role'],
                    'role_instruction': ROLE_INSTRUCTIONS[role], 'observation': state['observation'],
                    'observation_revision': state['observation_revision'], 'completed': state['completed'],
