@@ -134,8 +134,6 @@ class FrameSkills(InsertionSkills):
     def __init__(self, model, data, active, registry, installed, on_sample=None, on_stage=None, *,
                  transport_strategy='direct', on_transport_preflight_failure=None):
         entry = registry[active]
-        if transport_strategy != 'direct' and entry['kind'] != 'post':
-            raise ValueError('Detour execution is currently limited to post transport.')
         super().__init__(model, data, entry['config'], entry['joint'], on_sample, on_stage,
             transport_strategy=transport_strategy, on_transport_preflight_failure=on_transport_preflight_failure)
         self.registry, self.installed, self.active = registry, installed, active

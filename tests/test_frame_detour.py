@@ -56,14 +56,16 @@ class FrameDetourTests(unittest.TestCase):
         np.testing.assert_array_equal(data.qvel, before[2])
         np.testing.assert_array_equal(data.ctrl, before[3])
 
-    def test_unsupported_compound_detours_rejected_before_execution(self):
-        with self.assertRaises(ValueError):
-            execute_trial(product_count=10, transport_strategy='direct_then_rrt')
-        with self.assertRaises(ValueError):
-            build_frame_scene(6, transfer_obstacle=True)
-        model, data, registry = build_frame_scene(6)
-        with self.assertRaises(ValueError):
-            FrameSkills(model, data, 'sleeve_1', registry, set(), transport_strategy='direct_then_rrt')
+    def test_full_frame_compound_detours_still_rejected_before_execution(self):
+        for count in (6, 10):
+            with self.assertRaises(ValueError):
+                execute_trial(product_count=count, transport_strategy='direct_then_rrt')
+            with self.assertRaises(ValueError):
+                execute_trial(product_count=count, transfer_obstacle=True)
+        # Geometry/skills can be used by the separately labelled one-component probe.
+        model, data, registry = build_frame_scene(6, transfer_obstacle=True)
+        skills = FrameSkills(model, data, 'sleeve_1', registry, set(), transport_strategy='direct_then_rrt')
+        self.assertEqual(skills.active, 'sleeve_1')
         self.assertEqual(data.time, 0.)
 
     def test_two_post_graph_preserves_first_part_and_checks_its_collision_geometry(self):

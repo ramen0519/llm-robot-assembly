@@ -12,8 +12,10 @@ PART_SPAWNS = [*SPAWNS, (-.28, .05), (.26, -.20), (.13, -.25), (.04, -.25), (.27
 
 
 def build_frame_scene(product_count=6, *, cover_grip='center', transfer_obstacle=False):
-    if type(transfer_obstacle) is not bool or (transfer_obstacle and (type(product_count) is not int or not 2 <= product_count <= 5)):
-        raise ValueError('The transfer-obstacle probe is currently restricted to base and posts (2-5 parts).')
+    if type(transfer_obstacle) is not bool:
+        raise ValueError('The transfer-obstacle option must be boolean.')
+    # Scene construction also supports isolated compound-component probes.
+    # The full-frame runner controls its separately validated execution scope.
     if cover_grip not in ('center', 'edge'):
         raise ValueError('Unknown cover grip variant')
     if type(product_count) is not int or not 2 <= product_count <= 10:
