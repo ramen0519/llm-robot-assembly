@@ -9,9 +9,20 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from run_asap_native import EXPECTED_COMMIT, assess_candidate, prepare_normalized
+from asap_native_worker import removable_candidates, validate_prerequisites
 
 
 class NativeAsapTests(unittest.TestCase):
+    def test_declared_dependencies_filter_removal_candidates_without_claiming_physics(self):
+        requires = {'0': [], '1': ['0'], '2': ['1'], '3': ['1', '2']}
+        validate_prerequisites(requires, list(requires))
+        self.assertEqual(removable_candidates(['1', '2', '3'], ['0', '1', '2', '3'], requires), ['3'])
+        self.assertEqual(removable_candidates(['1', '2'], ['0', '1', '2'], requires), ['2'])
+        with self.assertRaises(ValueError):
+            validate_prerequisites({'0': [], '1': ['2'], '2': ['1']}, ['0', '1', '2'])
+        with self.assertRaises(ValueError):
+            validate_prerequisites({'0': [], '1': ['missing']}, ['0', '1'])
+
     def test_uniform_normalization_preserves_mesh_and_pose_in_metres(self):
         with tempfile.TemporaryDirectory() as temp:
             folder = Path(temp)
@@ -69,6 +80,9 @@ class NativeAsapTests(unittest.TestCase):
         self.assertEqual(assess_candidate(report, manifest, registry)['status'], 'rejected')
         report, manifest, registry = self.fixtures()
         registry['post_1']['requires'] = ['sleeve_1']
+        self.assertEqual(assess_candidate(report, manifest, registry)['status'], 'rejected')
+        report, manifest, registry = self.fixtures()
+        report['candidate_constraints'] = {'source': 'changed'}
         self.assertEqual(assess_candidate(report, manifest, registry)['status'], 'rejected')
 
 

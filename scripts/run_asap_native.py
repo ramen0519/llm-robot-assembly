@@ -70,6 +70,8 @@ def assess_candidate(report, manifest, registry):
         errors.append('Unsupported native report schema/source revision.')
     if report.get('input_sha256') != manifest['input_sha256']:
         errors.append('Native inputs do not match the exported CAD hashes.')
+    if report.get('candidate_constraints') != manifest.get('candidate_constraints'):
+        errors.append('Candidate constraints do not match the declared robot prerequisites.')
     if report.get('stats', {}).get('success') is not True or report.get('remaining') != ['0']:
         errors.append('No complete verified native disassembly sequence.')
     if report.get('stats', {}).get('stop_msg') in ('exception', 'interrupt'):
@@ -110,17 +112,29 @@ def assess_candidate(report, manifest, registry):
             'requires': ['current robot observations', 'grasp/IK/path checks', 'independent MuJoCo assembly verification']}
 
 
-def execute_native(*, count=3, timeout_s=120, budget=20, output_root=None):
+def execute_native(*, count=3, timeout_s=120, budget=20, output_root=None, respect_robot_prerequisites=False):
     if type(timeout_s) is not int or not 10 <= timeout_s <= 600 or type(budget) is not int or not 1 <= budget <= 100:
         raise ValueError('Native wall time/budget must be bounded.')
     bundle = export_bundle(output_root or ROOT / 'runs/asap_native')
     source, manifest = prepare_normalized(bundle, count)
+    if type(respect_robot_prerequisites) is not bool:
+        raise ValueError('The prerequisite-filter option must be boolean.')
     command = ['wsl', '-d', 'ASAP-Ubuntu', '-u', 'root', '--cd', ASAP_ROOT, '--',
                'env', 'OMP_NUM_THREADS=1', 'PYTHONDONTWRITEBYTECODE=1',
                'timeout', '--signal=TERM', '--kill-after=5s', str(timeout_s + 15),
                ASAP_PYTHON, '-B', '-u', wsl_path(ROOT / 'scripts/asap_native_worker.py'),
                '--root', ASAP_ROOT, '--input', wsl_path(source), '--output', wsl_path(bundle / 'native_report.json'),
                '--budget', str(budget), '--timeout', str(timeout_s)]
+    if respect_robot_prerequisites:
+        _, _, registry = build_frame_scene(count)
+        inverse = {name: part for part, name in manifest['binding']['part_map'].items()}
+        requires = {'0': [], **{inverse[name]: [inverse[p] for p in entry['requires']] for name, entry in registry.items()}}
+        path = bundle / 'robot_prerequisites.json'
+        write_json(path, requires)
+        manifest['candidate_constraints'] = {'source': 'developer_declared_robot_prerequisites', 'requires': requires,
+                                            'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+        write_json(bundle / 'normalization.json', manifest)
+        command.extend(['--robot-prerequisites', wsl_path(path)])
     write_json(bundle / 'invocation.json', {'command': command, 'api_calls': 0,
         'worker_sha256': hashlib.sha256((ROOT / 'scripts/asap_native_worker.py').read_bytes()).hexdigest(),
         'host_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest()})
@@ -152,6 +166,8 @@ if __name__ == '__main__':
     parser.add_argument('--parts', type=int, default=3, choices=range(2, 11))
     parser.add_argument('--timeout', type=int, default=120)
     parser.add_argument('--budget', type=int, default=20)
+    parser.add_argument('--respect-robot-prerequisites', action='store_true', help='Use declared robot dependencies to prune removal candidates; not geometry-only discovery')
     args = parser.parse_args()
-    result = execute_native(count=args.parts, timeout_s=args.timeout, budget=args.budget)
+    result = execute_native(count=args.parts, timeout_s=args.timeout, budget=args.budget,
+                            respect_robot_prerequisites=args.respect_robot_prerequisites)
     raise SystemExit(0 if result['status'] == 'native_success' else 1)
