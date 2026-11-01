@@ -16,7 +16,9 @@ from workcell_scene import ROOT, set_workcell_camera
 INSERTION_TRACE_FIELDS = TRACE_FIELDS + ['fixture_supported', 'fixture_contact_force_n', 'insertion_depth_m']
 
 
-def execute_trial(*, headless=True, snapshots=False, output_root=None, on_stage=None):
+def execute_trial(*, headless=True, snapshots=False, output_root=None, on_stage=None, scenario="nominal"):
+    if scenario not in ("nominal", "alignment_offset"):
+        raise ValueError("Unknown scenario")
     recorder = AssemblyRecorder(output_root or ROOT / 'runs/step18', skill='scripted_insert_post/v1',
                                 validation_profile='post_socket_insertion/v1')
     skills, status, error = None, 'failed', None
@@ -25,7 +27,7 @@ def execute_trial(*, headless=True, snapshots=False, output_root=None, on_stage=
         write_json(recorder.run_dir / 'resolved_config.json', {'config': config, 'joint': joint,
                    'environment': 'simulation', 'observation_source': 'sim_ground_truth',
                    'simulator_version': mujoco.__version__, 'orchestration': 'scripted',
-                   'physical_product_parts': 2, 'robot_installed_parts_goal': 1})
+                   'scenario': scenario, 'physical_product_parts': 2, 'robot_installed_parts_goal': 1})
         context = nullcontext(None) if headless else mujoco.viewer.launch_passive(model, data)
         with context as viewer, recorder.trace_path.open('w', newline='', encoding='utf-8') as stream:
             writer = csv.DictWriter(stream, fieldnames=INSERTION_TRACE_FIELDS, extrasaction='raise')
@@ -53,7 +55,8 @@ def execute_trial(*, headless=True, snapshots=False, output_root=None, on_stage=
             skills = InsertionSkills(model, data, config, joint, sample, stage)
             skills.settle()
             skills.pick(config['part']['id'])
-            skills.insert(config['part']['id'], config['target']['id'])
+            skills.insert(config['part']['id'], config['target']['id'],
+                          alignment_offset_m=[.006, 0.] if scenario == 'alignment_offset' else None)
             status = 'success'
             if snapshots:
                 save_snapshot(model, data, config, recorder.run_dir / 'final.png')
@@ -77,6 +80,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--headless', action='store_true')
     parser.add_argument('--snapshots', action='store_true')
+    parser.add_argument('--scenario', choices=['nominal', 'alignment_offset'], default='nominal')
     args = parser.parse_args()
-    result = execute_trial(headless=args.headless, snapshots=args.snapshots)
+    result = execute_trial(headless=args.headless, snapshots=args.snapshots, scenario=args.scenario)
     raise SystemExit(0 if result['status'] == 'success' else 1)
