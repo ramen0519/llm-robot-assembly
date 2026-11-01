@@ -2,7 +2,7 @@
 from copy import deepcopy
 import numpy as np
 
-from failure_report import FailureCode
+from failure_report import FailureCode, json_safe
 
 DATA_FIELDS = ('qpos', 'qvel', 'ctrl', 'act', 'mocap_pos', 'mocap_quat', 'eq_active',
                'qfrc_applied', 'xfrc_applied', 'xpos', 'xquat', 'geom_xpos', 'geom_xmat')
@@ -10,6 +10,13 @@ MODEL_FIELDS = ('body_pos', 'body_quat', 'body_mass', 'body_inertia', 'body_grav
                 'geom_pos', 'geom_quat', 'geom_size', 'geom_contype', 'geom_conaffinity',
                 'geom_friction', 'geom_margin', 'geom_gap', 'eq_data', 'jnt_range',
                 'actuator_ctrlrange', 'actuator_forcerange', 'actuator_gainprm', 'actuator_biasprm')
+
+
+def assembly_context(skills):
+    # Mating/support permissions and completed-part declarations are part of the task state.
+    return json_safe({'active': getattr(skills, 'active', None),
+                      'installed': sorted(getattr(skills, 'installed', ())),
+                      'registry': getattr(skills, 'registry', None)})
 
 
 def capture_transport_state(skills):
@@ -22,6 +29,7 @@ def capture_transport_state(skills):
             'ids': (skills.config['part']['id'], skills.config['target']['id']),
             'target_position': skills.verifier.target_position.copy(),
             'target_rotation': skills.verifier.target_rotation.copy(),
+            'assembly': assembly_context(skills),
             'mating': (skills.verifier.mating_enabled, getattr(skills.verifier, 'mating_motion', False))}
 
 
@@ -32,6 +40,7 @@ def same_transport_state(skills, before):
             or skills.motion.held_pose is None or before['held'] is None
             or len(skills.motion.held_pose) != len(before['held'])
             or (skills.config['part']['id'], skills.config['target']['id']) != before['ids']
+            or assembly_context(skills) != before['assembly']
             or skills.model.opt.timestep != before['timestep']):
         return False
     pairs = [(getattr(skills.data, k), v) for k, v in before['data'].items()]

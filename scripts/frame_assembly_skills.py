@@ -132,11 +132,14 @@ class FrameVerifier(InsertionVerifier):
 
 class FrameSkills(InsertionSkills):
     def __init__(self, model, data, active, registry, installed, on_sample=None, on_stage=None, *,
-                 transport_strategy='direct', on_transport_preflight_failure=None):
+                 transport_strategy='direct', on_transport_preflight_failure=None, empty_approach_strategy=None):
+        if empty_approach_strategy not in (None, 'direct', 'direct_then_rrt'):
+            raise ValueError('Unknown empty-gripper approach strategy.')
         entry = registry[active]
         super().__init__(model, data, entry['config'], entry['joint'], on_sample, on_stage,
             transport_strategy=transport_strategy, on_transport_preflight_failure=on_transport_preflight_failure)
         self.registry, self.installed, self.active = registry, installed, active
+        self.empty_approach_strategy = transport_strategy if empty_approach_strategy is None else empty_approach_strategy
         self.empty_approach_attempts = []
         self.verifier = FrameVerifier(model, active, registry, installed)
         self.motion = WorkcellMotion(model, data, self.verifier, on_sample)
@@ -154,7 +157,7 @@ class FrameSkills(InsertionSkills):
         return observation
 
     def _move_to_hover(self, position, rotation):
-        if self.transport_strategy == 'direct':
+        if self.empty_approach_strategy == 'direct':
             return self.motion.move(position, rotation)
         from empty_approach import plan_empty_approach
         attempt = {'part_id': self.active, 'stage': self.motion.stage,

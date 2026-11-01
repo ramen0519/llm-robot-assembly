@@ -11,6 +11,8 @@
 
 후속 **21C에서는 첫 결합의 실행 전 경로 실패를 LangGraph 정책에 전달**했다. 재관측 후 `재계획` 또는 `중단`을 선택하고, 우회 후 정렬 실패가 있으면 별도 복구를 거쳐 물리 삽입을 완료한다. 운반 재계획과 정렬 복구는 각각 최대 1회다. 전체 10부품에 정책 재계획을 확장한 것은 아니며 해당 실행기의 자동 우회는 기존대로 유지한다.
 
+**23H에서는 두 기둥을 같은 물리 상태에서 연속 설치하며 전체 재계획 한도를 검증했다.** 한도 2회에서 설치 2/2, 한도 1회에서 설치 1/2 후 두 번째 운반 계획 거부로 종료했다. 부품이 바뀌어도 한도가 초기화되지 않는다. 새 정책 재계획은 두 기둥까지이며, 빈 그리퍼의 기존 자동 접근 우회는 별도 설정·기록한다.
+
 **LangGraph의 single/roles는 규칙 정책이다. 단일 LLM API 연결부는 구현했지만 실제 모델 호출은 아직 검증하지 않았다.** CAD 구조·결합 정보·파지점·순서는 개발용으로 작성했다. 실제 API·실물·파인튜닝은 실행하지 않았다. LLM을 붙이는 것만으로 판단 효과가 입증되는 것은 아니다.
 
 ## 실행 명령
@@ -26,6 +28,8 @@ uv run --locked python scripts/run_frame_assembly.py --parts 10 --mode single --
 uv run --locked python scripts/run_component_probe.py --component sleeve_2 --transfer-obstacle --transport-strategy direct_then_rrt --snapshots
 # 첫 결합: 정책의 운반 재계획 선택 + 정렬 복구
 uv run --locked python scripts/run_assembly_graph.py --mode single --transfer-obstacle --transport-replan-budget 1 --scenario alignment_offset --snapshots
+# 두 기둥: 작업 전체 재계획 2회 + 첫 정렬 복구
+uv run --locked python scripts/run_frame_assembly.py --parts 3 --mode single --scenario first_alignment_offset --transfer-obstacle --empty-approach-strategy direct_then_rrt --transport-replan-budget 2 --snapshots
 ```
 
 전체 통합 실행의 실제 시간은 이번 PC에서 약 **29.0분**이었다. 다른 시험과 일부 CPU를 공유했으므로 속도 비교 수치로 쓰지 않는다. `run_frame_assembly.py`에 `--viewer`를 추가하면 같은 동작을 창에서 볼 수 있고 창을 닫으면 취소로 기록한다. 첫 결합 전용 `run_assembly_graph.py`는 `--snapshots`로 이미지를 저장한다. 기본 `direct`와 장애물 없는 이전 시연도 유지한다.
@@ -39,6 +43,7 @@ uv run --locked python scripts/run_assembly_graph.py --mode single --transfer-ob
 | 23G | 바닥판 외 사전 조립 없이 전체 9개 설치, 장애물 우회·정렬 복구·전체 상태 검사 | [23G](STEP_23G_FULL_FRAME_DETOUR.md) |
 | 25B | 운반 전략 외의 기록된 조건·소스가 같은 실행만 비교. 슬리브와 전체 프레임의 직접 경로 실패/대체 경로 성공 | [25B](STEP_25B_TRANSPORT_COMPARISON.md) |
 | 21C | 첫 결합의 실패 후 재관측·정책 재계획/중단 선택, 원래 목표 보존, 별도 정렬 복구와 물리 삽입 | [21C](STEP_21C_POLICY_TRANSPORT_REPLAN.md) |
+| 23H | 두 기둥의 정책 재계획과 전체 한도, 기존 설치 보존, 한도 소진·중단 시 부분 설치 기록 | [23H](STEP_23H_EPISODE_REPLAN_BUDGET.md) |
 
 ## 전체 개발 기반
 
@@ -57,6 +62,8 @@ uv run --locked python scripts/run_assembly_graph.py --mode single --transfer-ob
 
 ## 최신 실제 실행 근거
 
+- 두 기둥 정책 재계획: `runs/step23_frame/20261101T092900_641213Z_a6916448`, success, 설치 2/2, 재계획 2회·정렬 복구 1회. sim 222.868초, 111,484행, API 0회.
+- 같은 조건의 전체 재계획 한도 1회: `runs/step23_frame/20261101T093020_211581Z_50df6847`, 설치 1/2 후 두 번째 직접 운반 계획에서 failed. 기록된 조건·소스 12개는 한도 외에 일치한다.
 - 정책 운반 재계획 + 정렬 복구: `runs/step21/20261101T090033_453696Z_291f77b1`, success, 첫 기둥 설치 1/1. sim 103.044초, 51,549행, 최대 최종 오차 0.2826mm. 정책 선택 6회·재계획 1회·정렬 복구 1회·실제 API 0회.
 - 10부품 + 장애물 + 정렬 복구: `runs/step23_frame/20261101T081302_175687Z_3c24ac3a`, success, 설치 9/9.
 - 같은 조건의 직접 경로: `runs/step23_frame/20261101T081637_610192Z_d40ea38b`, 첫 운반 사전 충돌로 failed, 설치 0/9.
@@ -64,7 +71,7 @@ uv run --locked python scripts/run_assembly_graph.py --mode single --transfer-ob
 - 네 기둥 우회: `runs/step23_frame/20261101T080219_665496Z_47fd476f`, success, 설치 4/4.
 - 슬리브 개별 대체 경로: `runs/component_probes/20261101T080656_722545Z_35a70fa7`, success, 설치 1개. RRT 탐색 없이 검사된 관절 보간 경로 사용.
 - 덮개 개별 RRT 운반: `runs/component_probes/20261101T080743_149902Z_b257005a`, success, 설치 1개. 준비한 나머지 9부품은 설치 수에서 제외.
-- 21C 코드 범위의 복구 절차 재검증: `runs/step22_recipes/20261101T090035_787981Z_7d816771`, success, 현재 호환 등록본 1개. 기존 장애물 없는 첫 기둥 복구 조건에만 유효.
+- 23H 코드 범위의 복구 절차 재검증: `runs/step22_recipes/20261101T093235_612066Z_7ed8a41b`, success, 현재 호환 등록본 1개. 기존 장애물 없는 첫 기둥 복구 조건에만 유효.
 - 이전 장애물 없는 전체 조립: `runs/step23_frame/20261101T052809_562769Z_f77121fb`.
 - 외부 로더 확인: `runs/planner_inputs/20261101T054017_590834Z_53056bf4`. 실제 분해 탐색 성공과는 다름.
 
@@ -72,12 +79,14 @@ uv run --locked python scripts/run_assembly_graph.py --mode single --transfer-ob
 
 21C에서는 신규 정책 재계획 검사 8개, 기존 그래프 4개, API 연결부 오프라인 계약 17개, 두 기둥 연속 조립 회귀 1개로 관련 검사 30개가 통과했다. 별도 CLI 통합 실행과 기존 복구 절차 재검증도 성공했다. 10부품 전체 통합 실행을 이 변경 뒤 다시 돌린 것은 아니며, 실제 LLM API 호출은 0회다.
 
+23H에서는 신규 검사 5개(최초 4개와 추가 중단 검사 1개를 분리 실행), 기존 단일 재계획 8개, 두 기둥 자동 우회 1개, 비교 계약 4개로 관련 검사 18개가 통과했다. 별도 CLI에서 한도 2회 성공과 한도 1회 실패를 확인하고 설정·소스·시간·전체 횟수를 기록으로 대조했다. 코드 변경 뒤 기존 복구 절차도 재검증했다. 10부품 전체를 이번 변경 후 다시 실행하지는 않았다.
+
 전체 저장소 검사는 API 연결부 추가 전에 104개를 통과한 이력이 있다. 이후 추가 기능은 각 보고서의 관련 검사를 실행했으며 최신 코드의 전체 검사를 다시 돌렸다고 주장하지 않는다. 실제 조립 결과와 합성 계약 검사 수를 섞지 않는다.
 
 ## 남은 핵심 작업
 
 1. 제공자·모델·API 예산과 키를 준비해 구현된 단일 LLM 정책의 실제 호출·조립을 검증한다. 현재 해당 설정은 답변 대기 중이다.
-2. 검증된 대체 파지·접근·복구 후보와 변화 조건을 늘린다. 21C에서는 첫 결합의 운반 재계획/중단을 정책에 노출했고, 실제 경로 생성·검사는 기존 일반 코드가 수행한다. 파지 변경·작업 분해와 전체 작업의 예산 배분은 남아 있다.
+2. 검증된 대체 파지·접근·복구 후보와 변화 조건을 늘린다. 23H에서는 두 기둥의 운반 재계획/중단과 전체 한도를 연결했고, 실제 경로 생성·검사는 기존 일반 코드가 수행한다. 파지 변경·작업 분해와 10부품 전체의 정책 재계획은 남아 있다.
 3. 우리 CAD를 기존 분해 플래너에서 실제 계획하고 ID·단위·좌표·지지 조건을 확인해 실행 후보로 연결한다.
 4. 단일/역할 분리, 모델, 동결한 경험·스킬을 같은 관측·도구·전체 예산의 별도 시험셋에서 비교한다. 현재 성공 사례를 일반 성능 향상으로 주장하지 않는다.
 5. 새로운 배치·장애물·파지에서 실행 범위를 검증한다. 현재 전 부품 우회 연결의 성공은 한 제품·고정 장면·seed 3의 결과다.

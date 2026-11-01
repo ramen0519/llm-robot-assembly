@@ -4,6 +4,8 @@
 
 후속 [21C 정책 운반 재계획](docs/STEP_21C_POLICY_TRANSPORT_REPLAN.md)은 첫 결합에서 실행 전 경로 실패를 정책에 전달하고, 재관측 후 우회 재계획 또는 중단을 선택하게 한다. 규칙 정책의 우회→정렬 복구→물리 삽입을 검증했으며 실제 LLM 판단 결과는 아니다. 실행: `uv run --locked python scripts/run_assembly_graph.py --mode single --transfer-obstacle --transport-replan-budget 1 --scenario alignment_offset --snapshots`.
 
+[23H 두 기둥의 전체 재계획 한도](docs/STEP_23H_EPISODE_REPLAN_BUDGET.md)에서는 같은 물리 상태를 이어 두 기둥을 설치하고, 부품이 바뀌어도 한도가 초기화되지 않음을 확인했다. API 0회인 규칙 정책 검증이며 빈 그리퍼 접근 우회와 정책의 운반 재계획을 따로 기록한다.
+
 **2026-11-01 진행:** 시뮬레이션만 개발 중이다. 기존 분해 플래너는 조립 후보를 주는 외부 모듈로 두고, 물리 조립 실행·실패 복구·경험 재사용을 구현한다. 최신 상태와 한계는 [현재 진행 보고서](docs/CURRENT_STATUS.md), 전체 순서는 [개발 계획](docs/ASSEMBLY_EXECUTION_ROADMAP.md)을 참고한다.
 
 MuJoCo에서 조립 작업을 계획·실행·검증하고, 성공과 실패 경험을 재사용하는 LLM 기반 로봇 조립 졸업프로젝트.
