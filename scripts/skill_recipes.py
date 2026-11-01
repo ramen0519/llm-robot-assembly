@@ -13,7 +13,7 @@ def implementation_fingerprint():
     # Fail closed after any execution-code, model asset, or dependency-lock change.
     # The deliberately conservative scope is suitable for this first prototype.
     paths = [*sorted((ROOT / 'scripts').glob('*.py')), *sorted((ROOT / 'models').rglob('*')),
-             *sorted((ROOT / 'scenes').glob('*.xml')), ROOT / 'uv.lock']
+             *sorted((ROOT / 'scenes').glob('*.xml')), *sorted((ROOT / 'third_party').rglob('*.py')), ROOT / 'uv.lock']
     return digest({str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest()
                    for p in paths if p.is_file()})
 
