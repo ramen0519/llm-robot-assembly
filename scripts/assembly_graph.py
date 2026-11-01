@@ -31,7 +31,7 @@ class AssemblyState(TypedDict):
 
 def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, on_event=None,
                        scenario='nominal', recovery_budget=1, memory_lookup=None,
-                       task_id='four_post_frame_first_joint/v1', insert_result_skill='insert_post/v1', condition_fingerprint=None, transport_replan_budget=0):
+                       task_id='four_post_frame_first_joint/v1', insert_result_skill='insert_post/v1', condition_fingerprint=None, transport_replan_budget=0, recipe_summaries=None):
     if mode not in ('single', 'roles') or scenario not in ('nominal', 'alignment_offset'):
         raise ValueError('Unknown policy mode/scenario.')
     if type(recovery_budget) is not int or recovery_budget not in (0, 1):
@@ -41,6 +41,9 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
     if insert_result_skill not in ('insert_post/v1', 'insert_sleeve/v1', 'seat_cover/v1'):
         raise ValueError('Unknown insertion result contract.')
     keys = ['single'] if mode == 'single' else ['assembly', 'recovery']
+    recipe_summaries = deepcopy(recipe_summaries or [])
+    if not isinstance(recipe_summaries, list) or len(recipe_summaries) > 3:
+        raise ValueError('At most three advisory validated recipe summaries are supported.')
     policies = policies or {key: ScriptedPolicy(key) for key in keys}
     if set(policies) != set(keys):
         raise ValueError('Policy mapping does not match selected mode.')
@@ -69,7 +72,7 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
                    'role_instruction': ROLE_INSTRUCTIONS[role], 'observation': state['observation'],
                    'observation_revision': state['observation_revision'], 'completed': state['completed'],
                    'failure': state['pending_failure'], 'failures': state['failures'],
-                   'experiences': state['experiences'], 'last_verification': state['verification'],
+                   'experiences': state['experiences'], 'recipes': recipe_summaries, 'last_verification': state['verification'],
                    'recovery_budget_remaining': recovery_budget - state['recoveries'],
                    'transport_replans': state['transport_replans'],
                    'transport_replan_budget_remaining': transport_replan_budget - state['transport_replans'],
@@ -162,7 +165,8 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
                                    'completed': current['completed'], 'recoveries': current['recoveries'],
                                    'transport_replans': current['transport_replans'],
                                    'simulation_time_s': float(skills.data.time), 'failure_count': len(current['failures']),
-                                   'experience_ids': [r['record_id'] for r in current['experiences']]}))
+                                   'experience_ids': [r['record_id'] for r in current['experiences']],
+                                   'recipe_ids': [r['recipe_record_id'] for r in recipe_summaries]}))
             return update
         return node
 

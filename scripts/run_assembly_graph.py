@@ -10,16 +10,18 @@ import mujoco
 
 from assembly_graph import run_assembly_graph
 from failure_report import write_json
-from insertion_scene import build_insertion_scene
+from development_cases import SCENE_CASES, build_case
 from insertion_skills import InsertionSkills
 from run_insertion import INSERTION_TRACE_FIELDS
 from run_pick_place import AssemblyRecorder, save_snapshot
 from workcell_scene import ROOT
 
 
-def execute_trial(*, mode='roles', scenario='nominal', output_root=None, snapshots=False, use_memory=False, recovery_budget=1, recipe=None, llm_config_path=None, transport_strategy='direct', transfer_obstacle=False, observer=None, transport_replan_budget=0, policies=None):
+def execute_trial(*, mode='roles', scenario='nominal', output_root=None, snapshots=False, use_memory=False, recovery_budget=1, recipe=None, llm_config_path=None, transport_strategy='direct', transfer_obstacle=False, observer=None, transport_replan_budget=0, policies=None, scene_case='nominal', knowledge_bundle=None, knowledge_mode='both'):
     if mode not in ('single', 'roles') or scenario not in ('nominal', 'alignment_offset'):
         raise ValueError('Unknown policy mode/scenario.')
+    if knowledge_mode not in ('memory', 'recipes', 'both') or (knowledge_bundle is not None and (use_memory or recipe is not None)):
+        raise ValueError('Frozen knowledge is separate from mutable development memory and recipe replay.')
     if type(recovery_budget) is not int or recovery_budget not in (0, 1):
         raise ValueError('Recovery budget must be 0 or 1.')
     if type(transport_replan_budget) is not int or transport_replan_budget not in (0, 1):
@@ -44,6 +46,7 @@ def execute_trial(*, mode='roles', scenario='nominal', output_root=None, snapsho
     transfer_metrics = {'samples': 0, 'maximum_slip_m': 0., 'maximum_tilt_rad': 0.}
     status, error = 'failed', None
     meter, client, live_policy, llm_config = None, None, None, None
+    knowledge = None
     try:
         if llm_config_path is not None:
             from llm_runtime import load_llm_config, create_openai_client, ApiLedger
@@ -52,16 +55,22 @@ def execute_trial(*, mode='roles', scenario='nominal', output_root=None, snapsho
             client = create_openai_client(llm_config)
             meter = ApiLedger(llm_config, recorder.run_dir / 'llm_events.jsonl')
             live_policy = OpenAIAssemblyPolicy(llm_config, client, meter)
-        model, data, config, joint = build_insertion_scene(transfer_obstacle=transfer_obstacle)
+        model, data, config, joint = build_case(scene_case, transfer_obstacle=transfer_obstacle)
         write_json(recorder.run_dir / 'resolved_config.json', {
-            'config': config, 'joint': joint, 'scenario': scenario, 'mode': mode,
-            'recovery_budget': recovery_budget, 'transport_replan_budget': transport_replan_budget, 'memory_enabled': use_memory,
+            'config': config, 'joint': joint, 'scenario': scenario, 'mode': mode, 'scene_case': scene_case,
+            'recovery_budget': recovery_budget, 'transport_replan_budget': transport_replan_budget,
+            'memory_enabled': use_memory or (knowledge_bundle is not None and knowledge_mode in ('memory', 'both')),
+            'knowledge_mode': knowledge_mode if knowledge_bundle is not None else None,
             'transport_strategy': transport_strategy, 'transfer_obstacle': transfer_obstacle,
             'policy_kind': policy_kind, 'models': {'single': llm_config.model} if llm_config else None,
             'llm_config': llm_config.public() if llm_config else None, 'api_calls_at_start': 0,
             'environment': 'simulation', 'observation_source': 'sim_ground_truth', 'simulator_version': mujoco.__version__})
         from experience_memory import condition_fingerprint, read_json
         fingerprint = condition_fingerprint(read_json(recorder.run_dir / 'resolved_config.json'))
+        if knowledge_bundle is not None:
+            from frozen_knowledge import FrozenKnowledge
+            knowledge = FrozenKnowledge(read_json(knowledge_bundle), fingerprint, knowledge_mode)
+            write_json(recorder.run_dir / 'frozen_knowledge.json', knowledge.bundle)
         policies = {'single': live_policy} if live_policy else policies
         if recipe is not None:
             from skill_recipes import RecipeReplayPolicy, validate_candidate
@@ -72,6 +81,8 @@ def execute_trial(*, mode='roles', scenario='nominal', output_root=None, snapsho
             policies = {key: RecipeReplayPolicy(recipe, key) for key in keys}
             write_json(recorder.run_dir / 'recipe_candidate.json', recipe)
         lookup = None
+        if knowledge is not None:
+            lookup = knowledge.lookup
         if use_memory:
             from experience_memory import condition_fingerprint, read_json, retrieve_experiences
             fingerprint = condition_fingerprint(read_json(recorder.run_dir / 'resolved_config.json'))
@@ -115,7 +126,7 @@ def execute_trial(*, mode='roles', scenario='nominal', output_root=None, snapsho
                 transport_strategy=transport_strategy, on_transport_preflight_failure=preflight_failure)
             if observer:
                 observer(skills)  # Local test observer; never exposed through CLI or policy tools.
-            state = run_assembly_graph(skills, failure_handler=failure_handler, mode=mode, scenario=scenario, on_event=event, memory_lookup=lookup, recovery_budget=recovery_budget, policies=policies, condition_fingerprint=fingerprint, transport_replan_budget=transport_replan_budget)
+            state = run_assembly_graph(skills, failure_handler=failure_handler, mode=mode, scenario=scenario, on_event=event, memory_lookup=lookup, recovery_budget=recovery_budget, policies=policies, condition_fingerprint=fingerprint, transport_replan_budget=transport_replan_budget, recipe_summaries=knowledge.recipe_summaries() if knowledge else None)
             status, error = state['status'], state['error']
             if snapshots:
                 save_snapshot(model, data, config, recorder.run_dir / 'final.png')
@@ -127,13 +138,16 @@ def execute_trial(*, mode='roles', scenario='nominal', output_root=None, snapsho
             client.close()
     usage = meter.summary() if meter is not None else {'api_calls': 0, 'input_tokens': 0, 'output_tokens': 0, 'api_cost': 0}
     result = {'status': status, 'error': error, 'run_dir': str(recorder.run_dir), 'graph_state': state,
-              'policy_kind': policy_kind, 'policy_mode': mode,
+              'policy_kind': policy_kind, 'policy_mode': mode, 'scene_case': scene_case,
               'transport_strategy': transport_strategy, 'transfer_obstacle': transfer_obstacle,
               'transport_preflight_failures': preflight_reports,
               'transport_attempts': skills.transport_attempts if skills else [], 'transfer_metrics': transfer_metrics,
               'transport_replan_budget': transport_replan_budget,
               'policy_replan_attempts': skills.replan_attempts if skills else [],
-              'recipe_candidate_id': recipe['candidate_id'] if recipe else None, 'scenario': scenario, 'memory_enabled': use_memory,
+              'recipe_candidate_id': recipe['candidate_id'] if recipe else None, 'scenario': scenario,
+              'memory_enabled': use_memory or (knowledge_bundle is not None and knowledge_mode in ('memory', 'both')),
+              'knowledge_bundle_id': knowledge.bundle['bundle_id'] if knowledge else None,
+              'knowledge_mode': knowledge_mode if knowledge is not None else None,
               'api_calls': usage['api_calls'], 'input_tokens': usage['input_tokens'],
               'output_tokens': usage['output_tokens'], 'api_cost': usage['api_cost'],
               'llm_usage': usage if llm_config_path is not None else None,
@@ -157,6 +171,9 @@ if __name__ == '__main__':
     parser.add_argument('--transport-replan-budget', type=int, choices=[0, 1], default=0, help='Opt-in policy choice after an unexecuted transport rejection')
     parser.add_argument('--recovery-budget', type=int, choices=[0, 1], default=1)
     parser.add_argument('--memory', action='store_true', help='Retrieve matching development experiences')
+    parser.add_argument('--scene-case', choices=SCENE_CASES, default='nominal', help='Declared development variation, applied only at scene creation')
+    parser.add_argument('--knowledge-bundle', type=Path, help='Frozen development evidence, verified before motion')
+    parser.add_argument('--knowledge-mode', choices=['memory', 'recipes', 'both'], default='both')
     args = parser.parse_args()
-    result = execute_trial(mode=args.mode, scenario=args.scenario, snapshots=args.snapshots, use_memory=args.memory, recovery_budget=args.recovery_budget, llm_config_path=args.llm_config, transport_strategy=args.transport_strategy, transfer_obstacle=args.transfer_obstacle, transport_replan_budget=args.transport_replan_budget)
+    result = execute_trial(mode=args.mode, scenario=args.scenario, snapshots=args.snapshots, use_memory=args.memory, recovery_budget=args.recovery_budget, llm_config_path=args.llm_config, transport_strategy=args.transport_strategy, transfer_obstacle=args.transfer_obstacle, transport_replan_budget=args.transport_replan_budget, scene_case=args.scene_case, knowledge_bundle=args.knowledge_bundle, knowledge_mode=args.knowledge_mode)
     raise SystemExit(0 if result['status'] == 'success' else 1)

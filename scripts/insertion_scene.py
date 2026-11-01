@@ -38,9 +38,11 @@ def add_transfer_test_obstacle(spec, config, *, center_table_m=None):
     return obstacle
 
 
-def build_insertion_scene(config=None, dim=None, *, transfer_obstacle=False):
+def build_insertion_scene(config=None, dim=None, *, transfer_obstacle=False, obstacle_center_table_m=None):
     if type(transfer_obstacle) is not bool:
         raise ValueError('transfer_obstacle must be a boolean test-scene option.')
+    if obstacle_center_table_m is not None and not transfer_obstacle:
+        raise ValueError('Obstacle coordinates require a declared obstacle.')
     d = dim or FrameDimensions()
     d.validate()
     config = config or insertion_config(d)
@@ -56,7 +58,7 @@ def build_insertion_scene(config=None, dim=None, *, transfer_obstacle=False):
         body.add_geom(name=BASE_NAME + '_' + box['name'], type=mujoco.mjtGeom.mjGEOM_BOX,
                       pos=box['center'], size=np.array(box['size']) / 2,
                       rgba=[.18, .42, .70, 1.], friction=config['contact']['friction'])
-    obstacle = add_transfer_test_obstacle(spec, config) if transfer_obstacle else None
+    obstacle = add_transfer_test_obstacle(spec, config, center_table_m=obstacle_center_table_m) if transfer_obstacle else None
     model, data = compile_workcell(spec)
     target = table_to_world(config, [*config['target']['xy_table_m'], d.socket_floor + d.post_height / 2])
     return model, data, config, {
