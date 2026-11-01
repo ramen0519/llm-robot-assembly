@@ -129,7 +129,7 @@ def load_config(path=DEFAULT_CONFIG):
     return config
 
 
-def build_workcell(config):
+def build_workcell_spec(config):
     validate_config(config)
     spec = build_robot_spec()
     table, robot, part, target = (config[key] for key in ("table", "robot", "part", "target"))
@@ -174,6 +174,11 @@ def build_workcell(config):
     part_body.add_geom(name=part_name(config) + "_geom", type=mujoco.mjtGeom.mjGEOM_BOX,
                        size=np.asarray(part["size_m"]) / 2, mass=part["mass_kg"],
                        rgba=[0.95, 0.44, 0.08, 1], friction=config["contact"]["friction"])
+    return spec
+
+
+def compile_workcell(spec):
+    """Compile the robot and one free product part after optional fixed-fixture additions."""
     model = spec.compile()
     data = mujoco.MjData(model)
     # Composition extends home with the new free body's configured pose.
@@ -186,6 +191,10 @@ def build_workcell(config):
         raise ValueError("Arm joint ordering changed.")
     check_tcp_frame(model, data)
     return model, data
+
+
+def build_workcell(config):
+    return compile_workcell(build_workcell_spec(config))
 
 
 def observe_workcell(model, data, config):
