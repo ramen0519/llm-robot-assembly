@@ -79,7 +79,7 @@ def write_json(path, payload):
     temporary.replace(path)
 
 
-def capture_observation(model, data, *, source="sim_ground_truth", kinematics_fresh=True):
+def capture_observation(model, data, *, source="sim_ground_truth", kinematics_fresh=True, serialize=True):
     """Copy evidence only. Never step, forward, reset, or repair the observed state."""
     finite = all(np.all(np.isfinite(v)) for v in (data.qpos, data.qvel, data.ctrl))
     warnings = [{"index": i, "count": int(w.number), "last_info": int(w.lastinfo)}
@@ -122,7 +122,7 @@ def capture_observation(model, data, *, source="sim_ground_truth", kinematics_fr
                          for i in range(model.njnt)],
         "units": "hinge: rad, rad/s; free: xyz(m)+quaternion(wxyz), linear(m/s)+angular(rad/s)",
     })
-    return json_safe({
+    observation = {
         "source": source,
         # A candidate's MjData.time does not mean that a robot moved to that time/pose.
         "simulation_time_s": float(data.time) if source == "sim_ground_truth" else None,
@@ -132,7 +132,10 @@ def capture_observation(model, data, *, source="sim_ground_truth", kinematics_fr
         "mocap_positions_world_m": data.mocap_pos.copy(),
         "mocap_quaternions_wxyz": data.mocap_quat.copy(),
         "physics_warnings": warnings,
-    })
+    }
+    # The recorder keeps copied arrays internally; JSON conversion is only needed
+    # when exporting a report. Default public observations remain JSON-compatible.
+    return json_safe(observation) if serialize else observation
 
 
 @dataclass

@@ -1,5 +1,6 @@
 """Physically grasp, align, insert, release and independently verify one post."""
 import math
+from copy import deepcopy
 import mujoco
 import numpy as np
 
@@ -94,11 +95,11 @@ class InsertionSkills(AssemblySkills):
         self.verifier = InsertionVerifier(model, config, joint)
         self.motion = WorkcellMotion(model, data, self.verifier, on_sample)
 
-    def observe(self):
-        observation = super().observe()
+    def observe(self, *, serialize=True):
+        observation = super().observe(serialize=serialize)
         observation['target'].update(source='configured_assembly_mating_pose',
                                      desired_part_center_m=self.verifier.target_position.tolist())
-        observation['assembly_joint'] = {k: (v.tolist() if isinstance(v, np.ndarray) else v)
+        observation['assembly_joint'] = {k: (v.tolist() if isinstance(v, np.ndarray) else deepcopy(v))
                                          for k, v in self.verifier.joint.items()}
         return observation
 

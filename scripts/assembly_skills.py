@@ -30,8 +30,9 @@ class AssemblySkills:
         if self.on_stage:
             self.on_stage(name)
 
-    def observe(self):
-        return json_safe(observe_workcell(self.model, self.data, self.config))
+    def observe(self, *, serialize=True):
+        observation = observe_workcell(self.model, self.data, self.config)
+        return json_safe(observation) if serialize else observation
 
     def settle(self):
         self.stage("settle_workcell")

@@ -59,9 +59,9 @@ class AssemblyRecorder:
 
     def remember(self, skills, row):
         self.samples += 1
-        observation = capture_observation(skills.model, skills.data)
+        observation = capture_observation(skills.model, skills.data, serialize=False)
         if observation["valid"]:
-            observation["workcell"] = skills.observe()
+            observation["workcell"] = skills.observe(serialize=False)
             observation["measurements"] = json_safe(row)
             self.last_valid = observation
 

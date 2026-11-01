@@ -70,8 +70,8 @@ class MultiPostSkills(InsertionSkills):
         self.verifier = MultiPostVerifier(model, active, registry, installed)
         self.motion = WorkcellMotion(model, data, self.verifier, on_sample)
 
-    def observe(self):
-        observation = super().observe()
+    def observe(self, *, serialize=True):
+        observation = super().observe(serialize=serialize)
         observation['all_parts'] = {
             name: {'position_world_m': self.data.body(part_name(e['config'])).xpos.tolist(),
                    'quaternion_wxyz': self.data.body(part_name(e['config'])).xquat.tolist(),

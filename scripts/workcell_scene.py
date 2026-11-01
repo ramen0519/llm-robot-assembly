@@ -206,7 +206,7 @@ def observe_workcell(model, data, config):
     table_rotation = yaw_rotation(config["table"]["yaw_deg"])
     return {
         "source": "sim_ground_truth", "simulation_time_s": float(data.time),
-        "table_top_frame": {"parent_frame": "world", "origin_m": config["table"]["top_center_world_m"],
+        "table_top_frame": {"parent_frame": "world", "origin_m": list(config["table"]["top_center_world_m"]),
                             "rotation_matrix": table_rotation},
         "robot_base": {"frame": "world", "position_m": data.body("base").xpos.copy(),
                        "quaternion_xyzw": data.body("base").xquat[[1, 2, 3, 0]].copy()},
