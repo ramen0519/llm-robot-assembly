@@ -1,14 +1,12 @@
 # LLM Robot Assembly
 
-개별 부품 확장: [23F 슬리브·덮개 운반](docs/STEP_23F_COMPOUND_TRANSPORT.md)에서 실제 집기·대체 경로 운반·삽입을 확인했다. 초기 사전 조립 부품은 제외하고 각각 로봇 설치 1개로 집계한다. 전체 10부품 우회 연결과 코드 변경 후 복구 절차 재등록은 후속이다.
-
-추가 검증: [23E 네 기둥 연속 우회 조립](docs/STEP_23E_FOUR_POST_DETOUR.md)에서 같은 장면의 로봇 설치 4/4를 확인했다. 두 기둥 운반과 한 번의 빈 그리퍼 접근에 RRT가 사용됐고 나머지는 검사된 직접 경로였다. 실제 LLM 호출은 0회다.
+최신 통합 검증: [23G 10부품 우회·복구 조립](docs/STEP_23G_FULL_FRAME_DETOUR.md)에서 고정 장애물과 첫 정렬 실패를 포함해 로봇 설치 9/9를 확인했다. 현재 single은 규칙 정책이며 API 호출은 0회다. 실제 LLM 판단과 외부 플래너의 이 제품 계획 생성은 남아 있다.
 
 **2026-11-01 진행:** 시뮬레이션만 개발 중이다. 기존 분해 플래너는 조립 후보를 주는 외부 모듈로 두고, 물리 조립 실행·실패 복구·경험 재사용을 구현한다. 최신 상태와 한계는 [현재 진행 보고서](docs/CURRENT_STATUS.md), 전체 순서는 [개발 계획](docs/ASSEMBLY_EXECUTION_ROADMAP.md)을 참고한다.
 
 MuJoCo에서 조립 작업을 계획·실행·검증하고, 성공과 실패 경험을 재사용하는 LLM 기반 로봇 조립 졸업프로젝트.
 
-**10부품 개발용 프레임의 연속 물리 조립과 첫 정렬 실패 복구를 검증했다.** 바닥판 1개는 고정하고 기둥 4개·슬리브 4개·덮개 1개를 로봇이 설치한다. 기본 LangGraph single/roles는 규칙 정책이다. 단일 LLM API 연결부도 구현했으며 실제 모델 호출은 설정 준비 후 검증할 예정이다. 경험 저장·조건 검색, 기록된 복구 절차의 별도 물리 재검증, 빈 그리퍼·상자 운반의 우회 시험, 첫 기둥 및 두 기둥 연속 조립의 RRT 우회 연결, 규칙 평가 기준선도 구현했다. 실제 LLM 판단·외부 플래너의 이 제품 계획 생성·전체 조립의 자동 우회·실물은 남아 있다.
+**10부품 개발용 프레임의 연속 물리 조립과 첫 정렬 실패 복구를 검증했다.** 바닥판 1개는 고정하고 기둥 4개·슬리브 4개·덮개 1개를 로봇이 설치한다. 기본 LangGraph single/roles는 규칙 정책이다. 단일 LLM API 연결부도 구현했으며 실제 모델 호출은 설정 준비 후 검증할 예정이다. 경험 저장·조건 검색, 기록된 복구 절차의 별도 물리 재검증, 빈 그리퍼·상자 운반의 우회 시험, 10부품 연속 조립의 선택형 운반·빈 그리퍼 접근 우회 연결, 규칙 평가 기준선도 구현했다. 실제 LLM 판단·외부 플래너의 이 제품 계획 생성·새 작업 조건의 평가·실물은 남아 있다.
 
 개발 경로는 `C:\dev\llm-robot-assembly`이며, GitHub 저장소는 [ramen0519/llm-robot-assembly](https://github.com/ramen0519/llm-robot-assembly)다.
 
@@ -72,7 +70,7 @@ MuJoCo에서 조립 작업을 계획·실행·검증하고, 성공과 실패 경
 | 결과 판정 | 측정 가능한 조건으로 단계·전체 조립 성공 판정 |
 | 메모리·로그 | 적용 조건과 결과, 실패, 시간, API 사용량 저장 |
 
-MuJoCo 3.17.0과 mink 1.3.0으로 가까운 TCP 목표의 IK 계산과 모터를 통한 이동·도착을 확인했다. 전체 조립은 지역 TCP 중간점과 샘플별 접촉 검사를 사용한다. 별도 모션 모듈에서는 기존 `motion-planners`의 RRT-Connect를 재사용해 TCP 목표 IK→장애물 우회→물리 도착을 검증했다. 전체 조립에 자동 연결한 것은 아니다. [12B단계](docs/STEP_12B_RRT_CONNECT.md)에 출처와 한계를 기록했다. [12C단계](docs/STEP_12C_LOADED_DETOUR.md)에서는 실제로 상자를 잡고, 막힌 직접 경로에서 RRT로 우회한 뒤 내려놓는 별도 시험도 통과했다. 실행 명령은 `uv run --locked python scripts/run_loaded_detour.py --snapshots`다. 후속 [18B단계](docs/STEP_18B_TRANSPORT_INSERTION.md)에서는 첫 기둥의 LangGraph 조립에 선택형 운반 우회를 연결해 삽입·정렬 복구까지 확인했다. [23D단계](docs/STEP_23D_RETAINED_PART_DETOUR.md)는 기존 기둥을 유지하며 두 번째 기둥을 조립하고, 빈 그리퍼 접근도 우회한다.
+MuJoCo 3.17.0과 mink 1.3.0으로 가까운 TCP 목표의 IK 계산과 모터를 통한 이동·도착을 확인했다. 전체 조립은 지역 TCP 중간점과 샘플별 접촉 검사를 사용한다. 별도 모션 모듈에서는 기존 `motion-planners`의 RRT-Connect를 재사용해 TCP 목표 IK→장애물 우회→물리 도착을 검증했다. 별도 검증 뒤 23G에서 이 제품의 허용된 접근·운반 구간에 연결했다. [12B단계](docs/STEP_12B_RRT_CONNECT.md)에 출처와 한계를 기록했다. [12C단계](docs/STEP_12C_LOADED_DETOUR.md)에서는 실제로 상자를 잡고, 막힌 직접 경로에서 RRT로 우회한 뒤 내려놓는 별도 시험도 통과했다. 실행 명령은 `uv run --locked python scripts/run_loaded_detour.py --snapshots`다. 후속 [18B단계](docs/STEP_18B_TRANSPORT_INSERTION.md)에서는 첫 기둥의 LangGraph 조립에 선택형 운반 우회를 연결해 삽입·정렬 복구까지 확인했다. [23D단계](docs/STEP_23D_RETAINED_PART_DETOUR.md)는 두 기둥으로 시작했고, [23E](docs/STEP_23E_FOUR_POST_DETOUR.md)의 네 기둥과 [23F](docs/STEP_23F_COMPOUND_TRANSPORT.md)의 슬리브·덮개를 거쳐 23G에서 전체 10부품으로 확장했다.
 
 ## 현재 조립 시연
 

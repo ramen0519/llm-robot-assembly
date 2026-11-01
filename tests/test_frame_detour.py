@@ -56,17 +56,27 @@ class FrameDetourTests(unittest.TestCase):
         np.testing.assert_array_equal(data.qvel, before[2])
         np.testing.assert_array_equal(data.ctrl, before[3])
 
-    def test_full_frame_compound_detours_still_rejected_before_execution(self):
-        for count in (6, 10):
+    def test_full_frame_detour_scope_and_initial_installation_count(self):
+        for count in (1, 11, True, 6.5):
             with self.assertRaises(ValueError):
                 execute_trial(product_count=count, transport_strategy='direct_then_rrt')
-            with self.assertRaises(ValueError):
-                execute_trial(product_count=count, transfer_obstacle=True)
-        # Geometry/skills can be used by the separately labelled one-component probe.
-        model, data, registry = build_frame_scene(6, transfer_obstacle=True)
-        skills = FrameSkills(model, data, 'sleeve_1', registry, set(), transport_strategy='direct_then_rrt')
-        self.assertEqual(skills.active, 'sleeve_1')
-        self.assertEqual(data.time, 0.)
+        def observer(skills):
+            self.assertEqual(len(skills.registry), 9)
+            self.assertEqual(skills.installed, set())
+            self.assertEqual((skills.model.nq, skills.model.nv), (77, 68))
+            self.assertEqual(skills.data.time, 0.)
+            for entry in skills.registry.values():
+                actual = skills.data.body(part_name(entry['config'])).xpos
+                np.testing.assert_allclose(actual, np.array(entry['spawn_center_world_m']) + [0., 0., .005], atol=1e-10)
+            raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, 'Explicit test stop before full-frame motion.')
+        with tempfile.TemporaryDirectory() as temporary:
+            result = execute_trial(product_count=10, transport_strategy='direct_then_rrt', transfer_obstacle=True,
+                                   observer=observer, output_root=temporary)
+        self.assertEqual(result['status'], 'failed')
+        self.assertEqual(result['robot_installed_parts'], 0)
+        self.assertFalse(result['ten_part_assembly_complete'])
+        self.assertEqual(result['error'], 'Explicit test stop before full-frame motion.')
+        self.assertEqual(result['robot_installations_goal'], 9)
 
     def test_two_post_graph_preserves_first_part_and_checks_its_collision_geometry(self):
         holder, calls = {}, []

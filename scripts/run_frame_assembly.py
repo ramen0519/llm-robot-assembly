@@ -26,8 +26,8 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
         raise ValueError('The first-alignment scenario requires a graph mode')
     if transport_strategy not in ('direct', 'direct_then_rrt') or type(transfer_obstacle) is not bool:
         raise ValueError('Invalid transport option.')
-    if (transport_strategy != 'direct' or transfer_obstacle) and (type(product_count) is not int or not 2 <= product_count <= 5):
-        raise ValueError('Detour experiments currently support base plus posts only (2-5 parts).')
+    if type(product_count) is not int or not 2 <= product_count <= 10:
+        raise ValueError('Product count must include base plus one to nine free components.')
     wall_started = time.monotonic()
     recorder = AssemblyRecorder(output_root or ROOT / 'runs/step23_frame', skill='scripted_frame_assembly/v1' if mode == 'scripted' else 'frame_graph/v1',
                                 validation_profile='compound_frame_assembly/v1')
@@ -167,7 +167,7 @@ if __name__ == '__main__':
     parser.add_argument('--parts', type=int, choices=range(2, 11), default=6)
     parser.add_argument('--snapshots', action='store_true')
     parser.add_argument('--transport-strategy', choices=['direct', 'direct_then_rrt'], default='direct')
-    parser.add_argument('--transfer-obstacle', action='store_true', help='Fixed transfer test obstacle; base + posts only')
+    parser.add_argument('--transfer-obstacle', action='store_true', help='Fixed transfer test obstacle, present from episode start')
     parser.add_argument('--viewer', action='store_true', help='Open the passive MuJoCo viewer for this physical episode')
     parser.add_argument('--mode', choices=['scripted', 'single', 'roles'], default='scripted')
     parser.add_argument('--scenario', choices=['nominal', 'first_alignment_offset'], default='nominal')
