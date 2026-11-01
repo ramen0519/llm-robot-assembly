@@ -21,6 +21,8 @@ uv run --locked python scripts/run_frame_assembly.py --parts 2 --mode roles --sc
 uv run --locked python scripts/run_frame_assembly.py --parts 10 --mode roles --scenario first_alignment_offset --snapshots
 # 빈 그리퍼가 장애물을 우회하는 별도 모션 시험
 uv run --locked python scripts/run_motion_detour.py --snapshots
+# 상자를 집은 뒤 장애물 우회 → 실제 놓기
+uv run --locked python scripts/run_loaded_detour.py --snapshots
 # 정상 / 복구 없는 실패 / 복구 후 성공, 단일·역할 정책 6회 기준선
 uv run --locked python scripts/benchmark_assembly.py --repetitions 1
 ```
@@ -32,6 +34,7 @@ uv run --locked python scripts/benchmark_assembly.py --repetitions 1
 | 단계 | 실제 확인 범위 | 문서 |
 |---|---|---|
 | 12B 추가 | Mink 목표 IK → 기존 RRT-Connect → 물리 제어로 장애물 우회. 빈 그리퍼 별도 시험 | [12B](STEP_12B_RRT_CONNECT.md) |
+| 12C 추가 | 상자의 물리 파지 → 직접 경로 충돌 예측 → 재관측·RRT 우회 → 놓기. 전체 조립 자동 연결은 후속 | [12C](STEP_12C_LOADED_DETOUR.md) |
 | 15 | 물리 pick/place를 LangGraph에 연결 | [15](STEP_15_LANGGRAPH.md) |
 | 16 | 저장된 실제 분해 결과에서 조립 후보 변환 | [16](STEP_16_DISASSEMBLY_ADAPTER.md) |
 | 16B | 우리 CAD 10개를 외부 ASAP 로더 형식으로 내보내고 실제 로더로 확인 | [16B](STEP_16B_PLANNER_INPUT.md) |
@@ -49,13 +52,14 @@ uv run --locked python scripts/benchmark_assembly.py --repetitions 1
 
 - 전체 10부품 + 첫 정렬 복구: `runs/step23_frame/20261101T052809_562769Z_f77121fb`. 전체 1회 성공이며 일반 성공률로 해석하지 않는다.
 - TCP 목표 → IK → RRT 우회 → 실제 도착: `runs/motion_detour/20261101T055133_403030Z_459afbc4`. 최종 TCP 오차 약 0.0465mm.
+- 부품을 잡은 우회·놓기: `runs/loaded_detour/20261101T073056_625658Z_e730854e`. 물리 시간 93.544초, 최대 운반 미끄러짐 약 1.219mm, 최종 위치 오차 약 0.178mm. 고정 장면·seed 3 시험이며 조립 성공으로 집계하지 않는다.
 - viewer를 켠 작은 그래프 실행: `runs/step23_frame/20261101T054939_272494Z_acab7551`, success.
-- 현재 코드 범위의 복구 절차 재검증: `runs/step22_recipes/20261101T065300_766292Z_e998536d`, success. 호환 등록본 1개.
+- 현재 코드 범위의 복구 절차 재검증: `runs/step22_recipes/20261101T073109_969230Z_5f6d2fc6`, success. 호환 등록본 1개.
 - 외부 로더 입력 확인: `runs/planner_inputs/20261101T054017_590834Z_53056bf4`. 외부 플래너의 계획 탐색 실행은 아님.
 - 규칙 평가: `runs/step25_baseline/20261101T053132_441032Z_b741f3a0`. 예상 행동 6/6, 실제 조립 성공 4/6(복구를 끈 실패 2회 포함). LLM 성능 비교가 아님.
 - API 연결부 추가 전 전체 회귀 검사 **104개 PASS**(482.449초). 진행 중 나중에 추가한 TCP 목표 연결은 별도 4개 검사와 실제 우회 실행으로 다시 검증했다. 설치 패키지 51개 호환성 검사도 통과했다.
 
-단일 API 연결부 추가 후 새 검사 17개와 관련 회귀 검사 26개를 통과했다. SDK의 HTTP는 테스트 응답으로 대체했으며 실제 모델 호출 성능 검사는 아니다. 현재 설치 패키지 53개도 호환성 검사를 통과했다.
+단일 API 연결부 추가 후 새 검사 17개와 관련 회귀 검사 26개를 통과했다. SDK의 HTTP는 테스트 응답으로 대체했으며 실제 모델 호출 성능 검사는 아니다. 현재 설치 패키지 53개도 호환성 검사를 통과했다. 이후 운반 우회 모듈의 신규 검사 5개와 관련 검사 5개도 각각 통과했다. 신규 검사 1개의 종료 후 로그 접근 오류를 수정해 해당 항목을 재실행했으며 상세 실행 이력은 [12C](STEP_12C_LOADED_DETOUR.md)에 기록했다.
 
 ```powershell
 uv run --locked python -m unittest discover -s tests -v
@@ -77,7 +81,7 @@ uv run --locked python scripts/preview_llm_request.py
 1. 제공자·모델·API 예산과 키를 준비해 구현된 단일 LLM 정책의 실제 호출·첫 조립을 검증한다. 먼저 단일 정책 호출을 검증한 뒤 같은 입력·도구·전체 예산으로 역할 분리와 비교한다.
 2. LLM이 선택할 유효 대안을 늘린다. 현재 정상 행동은 대부분 하나로 정해져 있으므로 API를 붙이는 것만으로 판단 효과가 입증되지는 않는다. 검증된 대체 파지·접근·복구 후보와 변화 조건이 필요하다.
 3. 우리 CAD를 기존 분해 플래너에서 실제 계획하고 좌표·ID·지지 조건을 검증해 실행 후보로 연결한다. 현재는 결과 파일 어댑터와 입력 로더까지만 검증했다.
-4. RRT 우회를 전체 조립의 허용된 이동 구간과 연결하고 운반 부품까지 실제 검증한다. 접촉 삽입 중에는 임의 우회를 사용하지 않는다.
+4. RRT 우회를 전체 조립의 허용된 이동 구간과 연결하고 각 제품 부품·파지·주변 조립물을 실제 검증한다. 상자 하나를 잡은 우회·놓기 별도 시험은 완료했다. 접촉 삽입 중에는 임의 우회를 사용하지 않는다.
 5. 스킬·메모리를 고정한 별도 평가 사례에서 성공·복구·비용 효과를 비교한다. 지금 절차 등록은 첫 기둥의 특정 오정렬 사례에만 유효하다.
 
 현재 API 제공자·모델·비용 한도는 답변 대기 중이다. 다른 프로젝트의 키나 과금 승인을 가져오지 않았다. 실물 단계(24)는 사용자 요청대로 제외한다.
