@@ -5,7 +5,8 @@
 - Read `README.md` and the relevant sections of `docs/PROJECT_PLAN.md` before implementation.
 - Build a working MuJoCo simulation before connecting real hardware.
 - Keep the final target near 10 product parts; smaller assemblies are development milestones.
-- Start with one arm and a single LangGraph agent. Fine-tuning and multi-agent implementation are deferred.
+- Start with one arm and a single LangGraph LLM policy. Role-separated scripted policies are an offline test harness; actual multi-agent LLM implementation and fine-tuning are deferred. Keep the planned assembly/recovery role comparison behind the same executor, observations, tools and total budget.
+- Coordinate agents with ordinary graph code and serialize robot commands through one executor and verifier. First compare single/multi assembly control with the same model, tools, observations, knowledge and total system budget; keep the external planning module/output fixed.
 - Treat the laboratory presentation as reference material, not as user-authored code or proof that reusable code is available.
 - UR3 and UR3e are distinct. The presentation names UR3e; verify the selected physical robot before fixing the model.
 
@@ -41,3 +42,10 @@
 - Keep explanations tied to the actual files and behavior so the user can later modify and present the project themselves.
 - Finish the current increment and its explanation, then wait for the user's questions or instruction to continue before starting the next module. Do not demand a separate approval for every routine command within the agreed increment.
 - Keep each implementation increment reviewable and suitable for a focused commit; do not bundle unrelated work.
+- For explanatory lessons, cover one small unit per reply and wait for the user's questions or 'next'. A conceptual question does not authorize implementing the next module.
+
+## Autonomous development authorization (2026-11-01)
+
+- The user explicitly authorized consecutive simulation-only implementation while away. Do not stop after each milestone to ask for continuation; this overrides the earlier wait-between-modules rule for this session.
+- Keep each milestone small and separately verified. Write a Korean STEP markdown report with commands, results and limitations before continuing.
+- No real hardware. Do not treat an unavailable LLM provider/model/budget as permission to borrow another project's paid API approval.

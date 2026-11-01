@@ -1,66 +1,76 @@
 # 현재 진행 보고서 — 2026-11-01
 
-실제 작업 위치: `C:\dev\llm-robot-assembly`  
-작업 브랜치: `codex/simulation-progress`  
-사용자 요청에 따라 단계별 보고서를 남기며 연속 개발했다. 이 보고서는 시뮬레이션만 다룬다.
+작업 위치: `C:\dev\llm-robot-assembly`
+브랜치: `codex/simulation-progress`
+사용자 요청에 따라 작은 구현 단위별로 검증·한국어 Markdown 보고서·로컬 커밋을 남기며 연속 작업했다. 이번 작업 범위는 시뮬레이션이다.
 
-## 바로 확인할 수 있는 결과
+## 지금 되는 것
 
-기둥을 실제 접촉으로 잡아 구멍에 넣고, 손을 뗀 뒤 결합을 검사한다. 일부러 정렬을 6 mm 틀리게 하면 실패를 감지하고, 현재 파지를 재확인한 뒤 후퇴·재정렬해 같은 episode에서 복구한다. 이 흐름을 LangGraph로 실행하고 과거 경험 ID를 판단 문맥에 전달한다.
+**10부품 개발용 프레임을 끝까지 물리 조립했다.** 고정 바닥판 1개를 제외한 기둥 4개·슬리브 4개·덮개 1개를 로봇이 실제 접촉으로 집어 설치했다. 첫 기둥에 6mm 정렬 오류를 넣고, 같은 상태에서 복구한 뒤 나머지를 이어서 완성했다. 로봇 설치 9/9, 전체 sim 1023.688초, 부품별 마지막 검사 구간 최대 위치 오차 0.1525mm다.
 
-현재 정책은 규칙 코드다. LLM API/파인튜닝/실물 명령은 실행하지 않았다.
+**LangGraph는 연결됐지만 실제 LLM은 아직 연결되지 않았다.** 현재 single/roles는 같은 도구를 사용하는 단일/역할별 규칙 정책이다. 실물 명령·API 호출·파인튜닝은 실행하지 않았다. CAD 구조·결합 정보·파지점·순서는 개발용으로 작성했다.
+
+## 먼저 실행해 보기
 
 ```powershell
 cd C:\dev\llm-robot-assembly
 uv sync --locked
-# LangGraph + 측정 실패 + 복구 + 기존 경험 검색
-uv run --locked python scripts/run_assembly_graph.py --mode roles --scenario alignment_offset --memory --snapshots
-# 같은 도구를 사용하는 단일 정책 모드
-uv run --locked python scripts/run_assembly_graph.py --mode single --scenario alignment_offset
-# 창에서 첫 물리 결합 보기
-uv run --locked python scripts/run_insertion.py
-# 3부품 순차 조립
-uv run --locked python scripts/run_multi_post.py --posts 2 --snapshots
+# 작은 조립과 실패→복구 인계를 창에서 확인
+uv run --locked python scripts/run_frame_assembly.py --parts 2 --mode roles --scenario first_alignment_offset --viewer --snapshots
+# 10부품 연속 조립: 창 없이 계산하고 결과 이미지 저장
+uv run --locked python scripts/run_frame_assembly.py --parts 10 --mode roles --scenario first_alignment_offset --snapshots
+# 빈 그리퍼가 장애물을 우회하는 별도 모션 시험
+uv run --locked python scripts/run_motion_detour.py --snapshots
+# 정상 / 복구 없는 실패 / 복구 후 성공, 단일·역할 정책 6회 기준선
+uv run --locked python scripts/benchmark_assembly.py --repetitions 1
 ```
 
-메모리가 비어 있으면 검색 결과 0개로 진행한다. 현재 규칙 정책은 검색 내용을 보고 선택을 바꾸지 않는다.
+전체 조립은 느린 접근·삽입·검사를 여러 차례 수행하므로 즉시 끝나지 않는다. 해당 PC에서 기록된 전체 실행 시간은 약 34.0분이며 다른 물리 시험과 동시에 실행했다. viewer 창을 닫으면 취소로 기록한다.
 
 ## 단계별 상태와 보고서
 
-| 단계 | 현재 확인 범위 | 보고서 |
+| 단계 | 실제 확인 범위 | 문서 |
 |---|---|---|
-| 15 | 기존 물리 pick/place를 LangGraph에 연결 | [15](STEP_15_LANGGRAPH.md) |
-| 16 | 저장된 실제 분해 성공 결과를 조립 후보로 변환 | [16](STEP_16_DISASSEMBLY_ADAPTER.md) |
-| 17 | 10부품 후보 CAD와 첫 결합의 물리 장면 | [17](STEP_17_PRODUCT_SCENE.md) |
-| 18 | 첫 기둥 물리 삽입·해제·후퇴와 독립 판정 | [18](STEP_18_PHYSICAL_INSERTION.md) |
-| 19 | 정렬/깊이/접촉력 실패 검사, 기존 파지 검사 재사용 | [19](STEP_19_INSERTION_FAILURES.md) |
-| 20 | 초기화 없는 오정렬 복구 1종, 최대 1회 | [20](STEP_20_ALIGNMENT_RECOVERY.md) |
-| 21 준비 | 정책 계약·역할 인계·단일 비교 구조. LLM 미연결 | [21](STEP_21_POLICY_GRAPH_FOUNDATION.md) |
-| 22a/b | 경험 저장·조건 일치 검색·정책 문맥 전달 | [22](STEP_22_EXPERIENCE_MEMORY.md) |
-| 23a | 3부품 순차 조립, 주변 부품 유지 검사 | [23a](STEP_23A_MULTIPLE_POSTS.md) |
+| 12B 추가 | Mink 목표 IK → 기존 RRT-Connect → 물리 제어로 장애물 우회. 빈 그리퍼 별도 시험 | [12B](STEP_12B_RRT_CONNECT.md) |
+| 15 | 물리 pick/place를 LangGraph에 연결 | [15](STEP_15_LANGGRAPH.md) |
+| 16 | 저장된 실제 분해 결과에서 조립 후보 변환 | [16](STEP_16_DISASSEMBLY_ADAPTER.md) |
+| 16B | 우리 CAD 10개를 외부 ASAP 로더 형식으로 내보내고 실제 로더로 확인 | [16B](STEP_16B_PLANNER_INPUT.md) |
+| 17–18 | 10부품 후보 CAD, 첫 기둥 삽입·해제·후퇴 | [17](STEP_17_PRODUCT_SCENE.md), [18](STEP_18_PHYSICAL_INSERTION.md) |
+| 19–20 | 정렬·깊이·접촉 실패 판정, 초기화 없는 오정렬 복구 1종 | [19](STEP_19_INSERTION_FAILURES.md), [20](STEP_20_ALIGNMENT_RECOVERY.md) |
+| 21 준비 | 정책 계약·역할 인계·단일 비교 기반. 실제 LLM 미연결 | [21](STEP_21_POLICY_GRAPH_FOUNDATION.md) |
+| 22 | 경험 저장·조건 검색·정책 문맥 전달 | [22](STEP_22_EXPERIENCE_MEMORY.md) |
+| 22C | 기록된 복구 순서를 JSON 후보로 추출→새 물리 실행→조건 제한 등록 | [22C](STEP_22C_SKILL_RECIPES.md) |
+| 23A/B/C | 4기둥, 슬리브/덮개 개별 검증, 10부품 연속 조립 | [23A](STEP_23A_MULTIPLE_POSTS.md), [23B](STEP_23B_COMPOUND_COMPONENTS.md), [23C](STEP_23C_FULL_FRAME.md) |
+| 23 보완 | 계산용 상태와 물리 계산 구분, 기록 최적화, 실제 viewer 실행 | [계산](STEP_23_PHYSICS_CALCULATION.md), [기록](STEP_23_RECORDING_OPTIMIZATION.md), [보기](STEP_23_VIEWER.md) |
+| 25A | 6회 규칙 정책 기준선과 지표 집계. 실제 LLM 비교는 후속 | [25A](STEP_25A_OFFLINE_BASELINE.md) |
 
-5부품의 기둥 4개, 6부품의 첫 슬리브를 확장 시험 중이다. 10부품 CAD가 있다는 것과 10부품 전체 로봇 조립 성공은 다르다.
+## 검증 근거
 
-## 재현 근거
+- 전체 10부품 + 첫 정렬 복구: `runs/step23_frame/20261101T052809_562769Z_f77121fb`. 전체 1회 성공이며 일반 성공률로 해석하지 않는다.
+- TCP 목표 → IK → RRT 우회 → 실제 도착: `runs/motion_detour/20261101T055133_403030Z_459afbc4`. 최종 TCP 오차 약 0.0465mm.
+- viewer를 켠 작은 그래프 실행: `runs/step23_frame/20261101T054939_272494Z_acab7551`, success.
+- 현재 코드 범위의 복구 절차 재검증: `runs/step22_recipes/20261101T055523_188954Z_c2496e50`, success. 호환 등록본 1개.
+- 외부 로더 입력 확인: `runs/planner_inputs/20261101T054017_590834Z_53056bf4`. 외부 플래너의 계획 탐색 실행은 아님.
+- 규칙 평가: `runs/step25_baseline/20261101T053132_441032Z_b741f3a0`. 예상 행동 6/6, 실제 조립 성공 4/6(복구를 끈 실패 2회 포함). LLM 성능 비교가 아님.
+- 전체 회귀 검사 **104개 PASS**(482.449초). 진행 중 나중에 추가한 TCP 목표 연결은 별도 4개 검사와 실제 우회 실행으로 다시 검증했다. 설치 패키지 51개 호환성 검사도 통과했다.
 
-- 첫 삽입 성공: `runs/step18/20261101T043418_152942Z_ad1f4446`. 최종 오차 약 0.127 mm, 깊이 약 16.108 mm.
-- 의도적 오정렬 실패: `runs/step18/20261101T043637_317870Z_01380fe9`. XY 오차 약 6.075 mm, 하강 전 중단.
-- 같은 상태에서 복구 성공: `runs/step18/20261101T043858_731712Z_846593f5`.
-- 역할 인계 그래프 성공: `runs/step21/20261101T044217_632132Z_0f502680`.
-- 경험 2개 검색/전달 + 그래프 성공: `runs/step21/20261101T044438_478143Z_c7edee85`.
-- 3부품 순차 조립 성공: `runs/step23/20261101T044621_478409Z_0bef54c3`.
+```powershell
+uv run --locked python -m unittest discover -s tests -v
+uv pip check
+```
 
-실험 기록·PNG·OBJ·로컬 메모리는 Git에서 제외한다. 메모리는 `C:\dev\llm-robot-assembly\runtime\memory\simulation`에 있다. 보고서와 코드/환경 잠금 파일은 단계별 로컬 커밋에 남겼으며 원격 push는 하지 않았다.
+검사는 계약·오류 처리 검사와 실제 MuJoCo 동작 검사를 포함한다. 검사 수를 독립적인 조립 성공 횟수로 세지 않는다. 의도적으로 실패하는 반례도 포함된다.
 
-20단계까지 전체 회귀 검사 65개 PASS(189.596초). 이후 정책 그래프 4개, 경험 저장/검색 5개, 문맥 전달 1개, 다부품 장면 3개 및 기존 작업대 6개 재검사가 통과했다. 복합 부품 장면/선행 조건 검사 3개도 통과했지만 슬리브의 전체 물리 실행 결과와 구분한다.
+## 남은 핵심 작업
 
-## 아직 완료하지 않은 핵심
+1. 제공자·모델·API 예산을 정하고 실제 LLM 정책을 연결한다. 먼저 단일 정책 호출을 검증한 뒤 같은 입력·도구·전체 예산으로 역할 분리와 비교한다.
+2. LLM이 선택할 유효 대안을 늘린다. 현재 정상 행동은 대부분 하나로 정해져 있으므로 API를 붙이는 것만으로 판단 효과가 입증되지는 않는다. 검증된 대체 파지·접근·복구 후보와 변화 조건이 필요하다.
+3. 우리 CAD를 기존 분해 플래너에서 실제 계획하고 좌표·ID·지지 조건을 검증해 실행 후보로 연결한다. 현재는 결과 파일 어댑터와 입력 로더까지만 검증했다.
+4. RRT 우회를 전체 조립의 허용된 이동 구간과 연결하고 운반 부품까지 실제 검증한다. 접촉 삽입 중에는 임의 우회를 사용하지 않는다.
+5. 스킬·메모리를 고정한 별도 평가 사례에서 성공·복구·비용 효과를 비교한다. 지금 절차 등록은 첫 기둥의 특정 오정렬 사례에만 유효하다.
 
-1. 실제 LLM API 정책: 제공자·모델·이번 작업 비용 한도 답변 대기. 다른 프로젝트의 키/예산 승인을 가져오지 않음.
-2. 전역 모션플래닝: 현재 Mink IK + 지역 waypoint + 샘플 충돌 검사. MoveIt/OMPL 장애물 우회 경로는 아직 없음.
-3. 10부품 전체 조립과 다부품 LangGraph/복구/경험 통합.
-4. 새 절차 후보 생성과 별도 검증 후 스킬 등록(22c/d).
-5. 이번 제품 CAD로 외부 분해 플래너를 실제 호출하고 좌표·단위를 연결하는 검증.
-6. 동결된 시험셋에서 LLM 단일/다중, 모델, 스킬/메모리 유무 비교. 현재 기능 검사 결과를 성능 우위로 해석하지 않음.
+현재 API 제공자·모델·비용 한도는 답변 대기 중이다. 다른 프로젝트의 키나 과금 승인을 가져오지 않았다. 실물 단계(24)는 사용자 요청대로 제외한다.
 
-실물은 현재 작업 범위에서 제외한다. 개발 단계는 일부가 병렬로 준비되므로 23a 코드가 있다는 사실만으로 21~22 전체를 완료 처리하지 않는다.
+## 저장과 Git
+
+실험 로그·PNG·OBJ·메모리·절차 등록본은 Git에서 제외한다. 로컬 실행 데이터는 `C:\dev\llm-robot-assembly\runs`, 메모리·절차는 `runtime` 아래에 있어 OneDrive 동기화 폴더 밖이다. 코드·환경 잠금 파일·단계 보고서는 현재 브랜치의 로컬 커밋에 남겼다. `main` 변경이나 원격 push는 하지 않았다.
