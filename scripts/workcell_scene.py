@@ -177,16 +177,18 @@ def build_workcell_spec(config):
     return spec
 
 
-def compile_workcell(spec):
+def compile_workcell(spec, *, free_part_count=1):
     """Compile the robot and one free product part after optional fixed-fixture additions."""
+    if type(free_part_count) is not int or not 1 <= free_part_count <= 10:
+        raise ValueError('Expected 1 to 10 explicitly declared free product parts.')
     model = spec.compile()
     data = mujoco.MjData(model)
     # Composition extends home with the new free body's configured pose.
     # Initialising a trial is separate from physical motion during that trial.
     mujoco.mj_resetDataKeyframe(model, data, model.key("home").id)
     mujoco.mj_forward(model, data)
-    if (model.nq, model.nv, model.nu, model.neq, model.ntendon) != (21, 20, 7, 3, 1):
-        raise ValueError("Expected the original robot/gripper and one unactuated free body.")
+    if (model.nq, model.nv, model.nu, model.neq, model.ntendon) != (14 + 7 * free_part_count, 14 + 6 * free_part_count, 7, 3, 1):
+        raise ValueError("Expected the original robot/gripper and the declared unactuated free bodies.")
     if tuple(model.joint(i).name for i in range(6)) != JOINT_NAMES:
         raise ValueError("Arm joint ordering changed.")
     check_tcp_frame(model, data)
