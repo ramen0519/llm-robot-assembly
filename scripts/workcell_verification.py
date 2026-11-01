@@ -31,6 +31,13 @@ class WorkcellVerifier:
         self.target_position = table_to_world(config, [*config["target"]["xy_table_m"], self.half_size[2]])
         self.target_rotation = yaw_rotation(config["table"]["yaw_deg"] + config["target"]["yaw_deg"])
 
+    def contact_policy(self, pair, *, allow_support, allow_grasp):
+        is_support = pair == {self.part_geom, self.table_geom}
+        pad = next((g for g in pair if g in self.pads), None)
+        is_grasp = self.part_geom in pair and pad is not None
+        allowed = (allow_support and is_support) or (allow_grasp and is_grasp)
+        return allowed, is_support, is_grasp, pad
+
     def contacts(self, data, *, allow_support, allow_grasp, planned=False):
         """Only explicitly allowed geom pairs; never allow an entire robot/object category."""
         sides = {"left": False, "right": False}
@@ -38,10 +45,9 @@ class WorkcellVerifier:
         maximum_penetration = 0.0
         for index, contact in enumerate(data.contact):
             pair = {int(contact.geom1), int(contact.geom2)}
-            is_support = pair == {self.part_geom, self.table_geom}
-            pad = next((g for g in pair if g in self.pads), None)
-            is_grasp = self.part_geom in pair and pad is not None
-            if not ((allow_support and is_support) or (allow_grasp and is_grasp)):
+            allowed, is_support, is_grasp, pad = self.contact_policy(
+                pair, allow_support=allow_support, allow_grasp=allow_grasp)
+            if not allowed:
                 names = [self.model.geom(int(g)).name or f"geom#{g}" for g in pair]
                 raise FailureEvent(FailureCode.PLANNED_CONTACT if planned else FailureCode.UNEXPECTED_CONTACT,
                                    f"Forbidden contact: {names}")

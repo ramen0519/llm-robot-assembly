@@ -49,7 +49,8 @@ def save_snapshot(model, data, config, path):
 
 
 class AssemblyRecorder:
-    def __init__(self, output_root):
+    def __init__(self, output_root, *, skill=None, validation_profile="one_box_pick_place/v1"):
+        self.skill, self.validation_profile = skill, validation_profile
         folder = TrialRecorder(output_root)  # Reuse the unique run-directory convention only.
         self.run_dir, self.run_id = folder.run_dir, folder.run_id
         self.trace_path = self.run_dir / "skill_trace.csv"
@@ -85,11 +86,11 @@ class AssemblyRecorder:
                     "desired_part_rotation_world": skills.verifier.target_rotation}
         status = "cancelled" if event.code == FailureCode.CANCELLED else "failed"
         report = FailureReport(
-            schema_version=2, run_id=self.run_id, action_id=phase, skill=("langgraph_pick_place/v1" if through == 15 else "scripted_pick_place/v1"),
+            schema_version=2, run_id=self.run_id, action_id=phase, skill=self.skill or ("langgraph_pick_place/v1" if through == 15 else "scripted_pick_place/v1"),
             environment="simulation", status=status, failure_code=event.code, message=str(event),
             phase=event.phase or phase, detected_at_utc=utc_now(),
             simulation_time_s=float(skills.data.time) if skills else None,
-            validation_profile="one_box_pick_place/v1", goal=goal, actual=actual,
+            validation_profile=self.validation_profile, goal=goal, actual=actual,
             last_valid_observation=self.last_valid, candidate=event.candidate,
             violations=event.violations, exception_type=type(error.__cause__ or error).__name__,
             cause_hypotheses=[], response="stop_without_retry")
