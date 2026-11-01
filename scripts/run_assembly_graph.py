@@ -14,7 +14,7 @@ from run_pick_place import AssemblyRecorder, save_snapshot
 from workcell_scene import ROOT
 
 
-def execute_trial(*, mode='roles', scenario='nominal', output_root=None, snapshots=False):
+def execute_trial(*, mode='roles', scenario='nominal', output_root=None, snapshots=False, use_memory=False):
     recorder = AssemblyRecorder(output_root or ROOT / 'runs/step21', skill='assembly_graph/v1',
                                 validation_profile='post_socket_insertion/v1')
     skills, state = None, None
@@ -26,6 +26,14 @@ def execute_trial(*, mode='roles', scenario='nominal', output_root=None, snapsho
             'config': config, 'joint': joint, 'scenario': scenario, 'mode': mode,
             'policy_kind': 'scripted', 'models': None, 'api_calls': 0,
             'environment': 'simulation', 'observation_source': 'sim_ground_truth', 'simulator_version': mujoco.__version__})
+        lookup = None
+        if use_memory:
+            from experience_memory import condition_fingerprint, read_json, retrieve_experiences
+            fingerprint = condition_fingerprint(read_json(recorder.run_dir / 'resolved_config.json'))
+            def lookup(failure):
+                records = retrieve_experiences(fingerprint, failure_code=failure['failure_code'] if failure else None)
+                fields = ('record_id', 'outcome', 'failure_codes', 'verified_skill_results', 'successful_recovery_skills')
+                return [{key: record[key] for key in fields} for record in records]
         with recorder.trace_path.open('w', newline='', encoding='utf-8') as stream, (recorder.run_dir / 'graph_events.jsonl').open('w', encoding='utf-8') as events:
             writer = csv.DictWriter(stream, fieldnames=INSERTION_TRACE_FIELDS)
             writer.writeheader()
@@ -44,7 +52,7 @@ def execute_trial(*, mode='roles', scenario='nominal', output_root=None, snapsho
                 events.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + '\n')
                 events.flush()
             skills = InsertionSkills(model, data, config, joint, sample, stage)
-            state = run_assembly_graph(skills, failure_handler=failure_handler, mode=mode, scenario=scenario, on_event=event)
+            state = run_assembly_graph(skills, failure_handler=failure_handler, mode=mode, scenario=scenario, on_event=event, memory_lookup=lookup)
             status, error = state['status'], state['error']
             if snapshots:
                 save_snapshot(model, data, config, recorder.run_dir / 'final.png')
@@ -52,7 +60,7 @@ def execute_trial(*, mode='roles', scenario='nominal', output_root=None, snapsho
         status = recorder.fail(exc, skills, 21)
         error = str(exc)
     result = {'status': status, 'error': error, 'run_dir': str(recorder.run_dir), 'graph_state': state,
-              'policy_kind': 'scripted', 'policy_mode': mode, 'scenario': scenario,
+              'policy_kind': 'scripted', 'policy_mode': mode, 'scenario': scenario, 'memory_enabled': use_memory,
               'api_calls': 0, 'input_tokens': 0, 'output_tokens': 0, 'api_cost': 0,
               'physical_product_parts': 2, 'robot_installed_parts': 1 if status == 'success' else 0,
               'simulated_seconds': float(skills.data.time) if skills else None, 'samples': recorder.samples,
@@ -67,6 +75,7 @@ if __name__ == '__main__':
     parser.add_argument('--mode', choices=['single', 'roles'], default='roles')
     parser.add_argument('--scenario', choices=['nominal', 'alignment_offset'], default='nominal')
     parser.add_argument('--snapshots', action='store_true')
+    parser.add_argument('--memory', action='store_true', help='Retrieve matching development experiences')
     args = parser.parse_args()
-    result = execute_trial(mode=args.mode, scenario=args.scenario, snapshots=args.snapshots)
+    result = execute_trial(mode=args.mode, scenario=args.scenario, snapshots=args.snapshots, use_memory=args.memory)
     raise SystemExit(0 if result['status'] == 'success' else 1)

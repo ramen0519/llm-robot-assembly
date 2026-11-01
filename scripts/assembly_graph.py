@@ -25,10 +25,11 @@ class AssemblyState(TypedDict):
     policy_calls: int
     policy_mode: str
     error: str | None
+    experiences: list[dict]
 
 
 def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, on_event=None,
-                       scenario='nominal', recovery_budget=1):
+                       scenario='nominal', recovery_budget=1, memory_lookup=None):
     if mode not in ('single', 'roles') or scenario not in ('nominal', 'alignment_offset'):
         raise ValueError('Unknown policy mode/scenario.')
     if type(recovery_budget) is not int or recovery_budget not in (0, 1):
@@ -40,7 +41,7 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
     initial = {'status': 'running', 'observation': None, 'observation_revision': 0,
                'active_role': 'assembly', 'action': None, 'completed': [], 'last_result': None,
                'verification': None, 'failures': [], 'pending_failure': None, 'recoveries': 0,
-               'policy_calls': 0, 'policy_mode': mode, 'error': None}
+               'policy_calls': 0, 'policy_mode': mode, 'error': None, 'experiences': []}
     fault_injected = False
 
     def settle(state):
@@ -48,7 +49,10 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
         return {}
 
     def observe(state):
-        return {'observation': _snapshot(skills), 'observation_revision': state['observation_revision'] + 1,
+        experiences = memory_lookup(state['pending_failure']) if memory_lookup else []
+        if not isinstance(experiences, list) or len(experiences) > 3:
+            raise ValueError('Memory lookup must return at most three experience summaries.')
+        return {'observation': _snapshot(skills), 'observation_revision': state['observation_revision'] + 1, 'experiences': json_safe(experiences),
                 'active_role': 'recovery' if state['pending_failure'] else 'assembly'}
 
     def decide(state):
@@ -58,6 +62,7 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
                    'role_instruction': ROLE_INSTRUCTIONS[role], 'observation': state['observation'],
                    'observation_revision': state['observation_revision'], 'completed': state['completed'],
                    'failure': state['pending_failure'], 'failures': state['failures'],
+                   'experiences': state['experiences'],
                    'recovery_budget_remaining': recovery_budget - state['recoveries'],
                    'allowed_skills': allowed_skills(state['completed'], state['pending_failure'], state['recoveries'], recovery_budget)}
         proposal = validate_proposal(policies[role].propose(deepcopy(context)), context)
@@ -131,7 +136,8 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
                 on_event(json_safe({'node': name, 'status': current['status'], 'active_role': current['active_role'],
                                    'observation_revision': current['observation_revision'], 'action': current['action'],
                                    'completed': current['completed'], 'recoveries': current['recoveries'],
-                                   'simulation_time_s': float(skills.data.time), 'failure_count': len(current['failures'])}))
+                                   'simulation_time_s': float(skills.data.time), 'failure_count': len(current['failures']),
+                                   'experience_ids': [r['record_id'] for r in current['experiences']]}))
             return update
         return node
 
