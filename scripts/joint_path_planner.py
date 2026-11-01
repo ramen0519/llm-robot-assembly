@@ -5,9 +5,13 @@ import random
 import sys
 import time
 import mujoco
+import mink
+from mink.exceptions import NoSolutionFound
 import numpy as np
 from failure_report import FailureCode, FailureEvent
-from view_tcp import read_tcp_pose
+from view_tcp import read_tcp_pose, TCP_SITE_NAME
+from solve_tcp_ik import pose_errors
+from view_ur3e import JOINT_NAMES
 from workcell_motion import CartesianPlan
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'third_party'))
@@ -116,4 +120,44 @@ def plan_joint_path(motion, goal_arm, *, allow_support=True, allow_grasp=False, 
                 'collision_queries': checks, 'rejected_queries': rejected, 'waypoints': len(knots),
                 'resolution_rad': RESOLUTION_RAD, 'wall_planning_s': time.monotonic() - started,
                 'duration_s': duration, 'physics_executed_during_planning': False}
+    return plan, metadata
+
+
+def plan_tcp_path(motion, target_position, target_rotation, *, max_ik_iterations=400, **planner_options):
+    """Mink endpoint IK, then joint-space search; IK iterations are not robot motion."""
+    p, r = np.asarray(target_position, dtype=float), np.asarray(target_rotation, dtype=float)
+    if (p.shape != (3,) or r.shape != (3, 3) or not np.isfinite(p).all() or not np.isfinite(r).all()
+            or not np.allclose(r.T @ r, np.eye(3), atol=1e-8) or abs(np.linalg.det(r) - 1) > 1e-8
+            or type(max_ik_iterations) is not int or not 1 <= max_ik_iterations <= 1000):
+        raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, 'Invalid TCP goal/IK budget.')
+    model, data = motion.model, motion.data
+    configuration = mink.Configuration(model, q=data.qpos.copy())
+    task = mink.FrameTask(TCP_SITE_NAME, 'site', position_cost=1., orientation_cost=1., lm_damping=1e-3)
+    task.set_target(mink.SE3.from_rotation_and_translation(mink.SO3.from_matrix(r), p))
+    freeze = mink.DofFreezingTask(model, dof_indices=list(range(6, model.nv)))
+    limits = mink.ConfigurationLimit(model, min_distance_from_limits=-.001)
+    limits.lower[:6] = model.jnt_range[:6, 0] + 1e-6
+    limits.upper[:6] = model.jnt_range[:6, 1] - 1e-6
+    velocity_limit = mink.VelocityLimit(model, {name: 1. for name in JOINT_NAMES})
+    for iteration in range(max_ik_iterations + 1):
+        position_error, angle_error = pose_errors(configuration.data, p, r)
+        if position_error <= .0001 and angle_error <= math.radians(.05):
+            break
+        if iteration == max_ik_iterations:
+            raise FailureEvent(FailureCode.IK_NOT_CONVERGED, 'Endpoint IK budget exhausted; no physical command executed.')
+        try:
+            velocity = mink.solve_ik(configuration, [task], .02, 'daqp', limits=[limits, velocity_limit], constraints=[freeze])
+        except NoSolutionFound as exc:
+            raise FailureEvent(FailureCode.IK_NOT_CONVERGED, 'Endpoint IK solver did not find a solution.') from exc
+        if not np.isfinite(velocity).all():
+            raise FailureEvent(FailureCode.IK_NOT_CONVERGED, 'Non-finite endpoint IK update.')
+        configuration.integrate_inplace(velocity, .02)
+    if not np.allclose(configuration.q[6:], data.qpos[6:], atol=1e-8, rtol=0):
+        raise FailureEvent(FailureCode.MODEL_OR_CONTROL_INVALID, 'Endpoint IK modified frozen non-arm coordinates.')
+    plan, metadata = plan_joint_path(motion, configuration.q[:6], **planner_options)
+    # The servo verifier measures against the requested Cartesian goal, not just
+    # against the slightly approximate FK position of the IK solution.
+    plan.target_position, plan.target_rotation = p.copy(), r.copy()
+    motion.goal = {'kind': 'tcp_pose', 'frame': 'world', 'position_m': p.copy(), 'rotation_matrix': r.copy()}
+    metadata.update(ik_iterations=iteration, ik_position_error_m=position_error, ik_orientation_error_rad=angle_error)
     return plan, metadata

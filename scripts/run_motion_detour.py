@@ -6,7 +6,7 @@ import mujoco
 import numpy as np
 from failure_report import FailureCode, FailureEvent, write_json
 from assembly_skills import AssemblySkills
-from joint_path_planner import plan_joint_path
+from joint_path_planner import plan_tcp_path
 from run_pick_place import AssemblyRecorder, TRACE_FIELDS, save_snapshot
 from view_tcp import read_tcp_pose
 from workcell_scene import ROOT, load_config, build_workcell_spec, compile_workcell
@@ -82,7 +82,7 @@ def execute_trial(*, seed=3, snapshots=False, output_root=None):
                 save_snapshot(model, data, config, recorder.run_dir / 'before.png')
             skills.stage('joint_detour')
             initial_q, initial_v, initial_time = data.qpos.copy(), data.qvel.copy(), float(data.time)
-            plan, metadata = plan_joint_path(skills.motion, clear_plan.arm_knots[-1], seed=seed,
+            plan, metadata = plan_tcp_path(skills.motion, target, rotation, seed=seed,
                                              max_time_s=20., search_margin_rad=.5)
             if not np.array_equal(initial_q, data.qpos) or not np.array_equal(initial_v, data.qvel) or data.time != initial_time:
                 raise ValueError('Planner changed live robot/product physics state.')
