@@ -26,6 +26,10 @@ class CartesianPlan:
     target_rotation: np.ndarray
     duration_s: float
     checked_samples: int
+    start_qvel: np.ndarray
+    start_ctrl: np.ndarray
+    start_mocap_pos: np.ndarray
+    start_mocap_quat: np.ndarray
 
 
 class WorkcellMotion:
@@ -137,7 +141,8 @@ class WorkcellMotion:
         # Uniform knot parameter + smoothstep time scaling, bounded reference speed.
         max_derivative = intervals * float(np.max(np.abs(np.diff(knots, axis=0))))
         duration = max(3., 1.5 * distance / 0.025, 1.5 * max_derivative / math.radians(5))
-        return CartesianPlan(self.data.qpos.copy(), float(self.data.time), knots, p.copy(), r.copy(), duration, checked)
+        return CartesianPlan(self.data.qpos.copy(), float(self.data.time), knots, p.copy(), r.copy(), duration, checked,
+                             self.data.qvel.copy(), self.data.ctrl.copy(), self.data.mocap_pos.copy(), self.data.mocap_quat.copy())
 
     def sample(self, *, allow_support, allow_grasp):
         row = self.verifier.sample(self.data, self.reference, allow_support=allow_support, allow_grasp=allow_grasp)
@@ -179,7 +184,11 @@ class WorkcellMotion:
 
     def execute(self, plan, *, allow_support, allow_grasp):
         if (not math.isclose(self.data.time, plan.start_time_s, abs_tol=1e-10)
-                or not np.allclose(self.data.qpos, plan.start_qpos, atol=1e-10, rtol=0)):
+                or not np.allclose(self.data.qpos, plan.start_qpos, atol=1e-10, rtol=0)
+                or not np.allclose(self.data.qvel, plan.start_qvel, atol=1e-10, rtol=0)
+                or not np.allclose(self.data.ctrl, plan.start_ctrl, atol=1e-10, rtol=0)
+                or not np.allclose(self.data.mocap_pos, plan.start_mocap_pos, atol=1e-10, rtol=0)
+                or not np.allclose(self.data.mocap_quat, plan.start_mocap_quat, atol=1e-10, rtol=0)):
             raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, "Plan is stale; observe and plan again.")
         self.plans.append({"stage": self.stage, "duration_s": plan.duration_s,
                            "waypoints": len(plan.arm_knots), "checked_samples": plan.checked_samples,

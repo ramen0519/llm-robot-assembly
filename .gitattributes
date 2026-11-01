@@ -24,3 +24,7 @@ models/universal_robots_ur3e/PROVENANCE.md text eol=lf
 models/robotiq_2f85/** -text
 models/robotiq_2f85/assets/*.stl binary
 models/robotiq_2f85/PROVENANCE.md text eol=lf
+
+# Preserve the pinned MIT motion-planners source bytes.
+third_party/motion_planners/** -text
+third_party/motion_planners/PROVENANCE.json text eol=lf
