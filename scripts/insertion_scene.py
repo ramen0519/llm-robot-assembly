@@ -22,6 +22,22 @@ def insertion_config(dim=None):
     return config
 
 
+def add_transfer_test_obstacle(spec, config, *, center_table_m=None):
+    """Fixed development fixture, present from scene initialization."""
+    center = np.asarray([-.010, -.125, .115] if center_table_m is None else center_table_m, dtype=float)
+    if center.shape != (3,) or not np.isfinite(center).all():
+        raise ValueError('Test obstacle needs a finite table-frame XYZ center.')
+    obstacle = {'name': 'assembly_transfer_obstacle', 'kind': 'fixed_test_sphere',
+                'center_table_m': center.tolist(), 'radius_m': .025, 'margin_m': .006}
+    center = table_to_world(config, obstacle['center_table_m'])
+    obstacle['center_world_m'] = center.tolist()
+    fixture = spec.worldbody.add_body(name=obstacle['name'], pos=center)
+    fixture.add_geom(name=obstacle['name'] + '_geom', type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                     size=[obstacle['radius_m'], 0., 0.], margin=obstacle['margin_m'],
+                     rgba=[.9, .15, .12, 1.])
+    return obstacle
+
+
 def build_insertion_scene(config=None, dim=None, *, transfer_obstacle=False):
     if type(transfer_obstacle) is not bool:
         raise ValueError('transfer_obstacle must be a boolean test-scene option.')
@@ -40,16 +56,7 @@ def build_insertion_scene(config=None, dim=None, *, transfer_obstacle=False):
         body.add_geom(name=BASE_NAME + '_' + box['name'], type=mujoco.mjtGeom.mjGEOM_BOX,
                       pos=box['center'], size=np.array(box['size']) / 2,
                       rgba=[.18, .42, .70, 1.], friction=config['contact']['friction'])
-    obstacle = None
-    if transfer_obstacle:
-        obstacle = {'name': 'assembly_transfer_obstacle', 'kind': 'fixed_test_sphere',
-                    'center_table_m': [-.010, -.125, .115], 'radius_m': .025, 'margin_m': .006}
-        center = table_to_world(config, obstacle['center_table_m'])
-        obstacle['center_world_m'] = center.tolist()
-        fixture = spec.worldbody.add_body(name=obstacle['name'], pos=center)
-        fixture.add_geom(name=obstacle['name'] + '_geom', type=mujoco.mjtGeom.mjGEOM_SPHERE,
-                         size=[obstacle['radius_m'], 0., 0.], margin=obstacle['margin_m'],
-                         rgba=[.9, .15, .12, 1.])
+    obstacle = add_transfer_test_obstacle(spec, config) if transfer_obstacle else None
     model, data = compile_workcell(spec)
     target = table_to_world(config, [*config['target']['xy_table_m'], d.socket_floor + d.post_height / 2])
     return model, data, config, {

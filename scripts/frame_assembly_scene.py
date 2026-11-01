@@ -3,7 +3,7 @@ from copy import deepcopy
 import mujoco
 import numpy as np
 from frame_product import product_parts
-from insertion_scene import BASE_NAME, BASE_XY_TABLE, insertion_config
+from insertion_scene import BASE_NAME, BASE_XY_TABLE, insertion_config, add_transfer_test_obstacle
 from multi_post_scene import MULTI_DIMENSIONS, SPAWNS
 from workcell_scene import build_workcell_spec, compile_workcell, part_name, table_to_world, yaw_quat_wxyz, yaw_rotation, validate_config
 
@@ -11,7 +11,9 @@ from workcell_scene import build_workcell_spec, compile_workcell, part_name, tab
 PART_SPAWNS = [*SPAWNS, (-.28, .05), (.26, -.20), (.13, -.25), (.04, -.25), (.27, .17)]
 
 
-def build_frame_scene(product_count=6, *, cover_grip='center'):
+def build_frame_scene(product_count=6, *, cover_grip='center', transfer_obstacle=False):
+    if type(transfer_obstacle) is not bool or (transfer_obstacle and (type(product_count) is not int or not 2 <= product_count <= 5)):
+        raise ValueError('The transfer-obstacle probe is currently restricted to base and posts (2-5 parts).')
     if cover_grip not in ('center', 'edge'):
         raise ValueError('Unknown cover grip variant')
     if type(product_count) is not int or not 2 <= product_count <= 10:
@@ -28,6 +30,8 @@ def build_frame_scene(product_count=6, *, cover_grip='center'):
         base.add_geom(name=BASE_NAME + '_' + box['name'], type=mujoco.mjtGeom.mjGEOM_BOX,
                       pos=box['center'], size=np.array(box['size']) / 2, rgba=[.18, .42, .70, 1.],
                       friction=config['contact']['friction'])
+    # This fixture blocks transport while leaving the second socket's descent clear.
+    obstacle = add_transfer_test_obstacle(spec, config, center_table_m=[.040, -.150, .115]) if transfer_obstacle else None
     registry = {}
     for i, part in enumerate(product[1:product_count]):
         kind = part['kind']
@@ -82,7 +86,8 @@ def build_frame_scene(product_count=6, *, cover_grip='center'):
                  'socket_rim_z_world_m': c['table']['top_center_world_m'][2] + rim_z,
                  'nominal_insertion_depth_m': rim_z - bottom_target,
                  'nominal_side_clearance_m': (d.hole_width - d.post_width) / 2,
-                 'source': 'sim_ground_truth', 'fixture_status': 'base rigidly pre-fixtured'}
+                 'source': 'sim_ground_truth', 'fixture_status': 'base rigidly pre-fixtured',
+                 **({'transport_test_obstacle': deepcopy(obstacle)} if obstacle else {})}
         registry[part['id']] = {'config': c, 'joint': joint, 'kind': kind, 'requires': part['requires'],
                               'geometry_representation': 'compound_boxes', 'body_origin_in_cad_m': origin.tolist(),
                               'body_rotation_in_cad': np.eye(3).tolist(), 'collision_geom_names': collision_names,

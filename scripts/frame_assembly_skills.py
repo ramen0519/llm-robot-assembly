@@ -131,10 +131,15 @@ class FrameVerifier(InsertionVerifier):
 
 
 class FrameSkills(InsertionSkills):
-    def __init__(self, model, data, active, registry, installed, on_sample=None, on_stage=None):
+    def __init__(self, model, data, active, registry, installed, on_sample=None, on_stage=None, *,
+                 transport_strategy='direct', on_transport_preflight_failure=None):
         entry = registry[active]
-        super().__init__(model, data, entry['config'], entry['joint'], on_sample, on_stage)
+        if transport_strategy != 'direct' and entry['kind'] != 'post':
+            raise ValueError('Detour execution is currently limited to post transport.')
+        super().__init__(model, data, entry['config'], entry['joint'], on_sample, on_stage,
+            transport_strategy=transport_strategy, on_transport_preflight_failure=on_transport_preflight_failure)
         self.registry, self.installed, self.active = registry, installed, active
+        self.empty_approach_attempts = []
         self.verifier = FrameVerifier(model, active, registry, installed)
         self.motion = WorkcellMotion(model, data, self.verifier, on_sample)
 
@@ -149,6 +154,27 @@ class FrameSkills(InsertionSkills):
                                            'installed': name in self.installed}
                                     for name, e in self.registry.items()}
         return observation
+
+    def _move_to_hover(self, position, rotation):
+        if self.transport_strategy == 'direct':
+            return self.motion.move(position, rotation)
+        from empty_approach import plan_empty_approach
+        attempt = {'part_id': self.active, 'stage': self.motion.stage,
+                   'start_time_s': float(self.data.time), 'status': 'planning', 'planning': None}
+        self.empty_approach_attempts.append(attempt)
+        try:
+            plan, metadata = plan_empty_approach(self, position, rotation,
+                on_preflight_failure=self.on_transport_preflight_failure)
+            attempt['planning'] = metadata
+            rows = self.motion.execute(plan, allow_support=True, allow_grasp=False)
+            attempt['status'] = 'executed'
+            return rows
+        except (Exception, KeyboardInterrupt) as exc:
+            attempt['status'] = 'failed'
+            attempt['failure_code'] = getattr(exc, 'code', FailureCode.UNCLASSIFIED_ERROR).value
+            raise
+        finally:
+            attempt['end_time_s'] = float(self.data.time)
 
     def approach(self, part_id):
         if part_id != self.active or self.motion.held_pose is not None or part_id in self.installed:
@@ -166,7 +192,7 @@ class FrameSkills(InsertionSkills):
         grasp = body.xpos.copy() + rotation @ offset
         orientation = rotation @ DOWNWARD_TCP
         self.stage('approach_hover')
-        self.motion.move(grasp + [0., 0., HOVER_M], orientation)
+        self._move_to_hover(grasp + [0., 0., HOVER_M], orientation)
         body = self.data.body(self.verifier.part_body)
         if (np.linalg.norm(body.xpos + body.xmat.reshape(3, 3) @ offset - grasp) > .001
                 or rotation_error(body.xmat.reshape(3, 3), rotation) > math.radians(1)):
