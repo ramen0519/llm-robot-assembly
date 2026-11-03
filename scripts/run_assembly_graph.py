@@ -17,7 +17,7 @@ from run_pick_place import AssemblyRecorder, save_snapshot
 from workcell_scene import ROOT
 
 
-def execute_trial(*, mode='roles', scenario='nominal', output_root=None, snapshots=False, use_memory=False, recovery_budget=1, recipe=None, llm_config_path=None, transport_strategy='direct', transfer_obstacle=False, observer=None, transport_replan_budget=0, policies=None, scene_case='nominal', knowledge_bundle=None, knowledge_mode='both'):
+def execute_trial(*, mode='roles', scenario='nominal', output_root=None, snapshots=False, use_memory=False, recovery_budget=1, recipe=None, llm_config_path=None, transport_strategy='direct', transfer_obstacle=False, observer=None, transport_replan_budget=0, policies=None, scene_case='nominal', knowledge_bundle=None, knowledge_mode='both', propose_grasp=False):
     if mode not in ('single', 'roles') or scenario not in ('nominal', 'alignment_offset'):
         raise ValueError('Unknown policy mode/scenario.')
     if knowledge_mode not in ('memory', 'recipes', 'both') or (knowledge_bundle is not None and (use_memory or recipe is not None)):
@@ -37,6 +37,10 @@ def execute_trial(*, mode='roles', scenario='nominal', output_root=None, snapsho
         raise ValueError('Invalid transport strategy/test-obstacle option.')
     if recipe is not None and (transport_strategy != 'direct' or transfer_obstacle):
         raise ValueError('Recorded recipe replay does not cover detour conditions.')
+    if propose_grasp and (mode != 'single' or (llm_config_path is None and policies is None)
+                          or recipe is not None or use_memory or knowledge_bundle is not None
+                          or scenario != 'nominal' or transport_replan_budget):
+        raise ValueError('Proposed grasps require a single proposing policy and nominal first-post insertion without replay.')
     policy_kind = 'openai_responses' if llm_config_path is not None else ('recipe_replay' if recipe else 'scripted')
     wall_started = time.monotonic()
     recorder = AssemblyRecorder(output_root or ROOT / 'runs/step21', skill='assembly_graph/v1',
@@ -58,6 +62,7 @@ def execute_trial(*, mode='roles', scenario='nominal', output_root=None, snapsho
         model, data, config, joint = build_case(scene_case, transfer_obstacle=transfer_obstacle)
         write_json(recorder.run_dir / 'resolved_config.json', {
             'config': config, 'joint': joint, 'scenario': scenario, 'mode': mode, 'scene_case': scene_case,
+            'grasp_mode': 'proposed' if propose_grasp else 'fixed',
             'recovery_budget': recovery_budget, 'transport_replan_budget': transport_replan_budget,
             'memory_enabled': use_memory or (knowledge_bundle is not None and knowledge_mode in ('memory', 'both')),
             'knowledge_mode': knowledge_mode if knowledge_bundle is not None else None,
@@ -104,7 +109,8 @@ def execute_trial(*, mode='roles', scenario='nominal', output_root=None, snapsho
             def stage(name):
                 stream.flush()
                 print(f'[{data.time:7.3f} s] {name}', flush=True)
-                if snapshots and name in ('insert_alignment_check', 'insert_release'):
+                if snapshots and (name in ('insert_alignment_check', 'insert_release')
+                                  or (propose_grasp and name == 'pick_lift')):
                     save_snapshot(model, data, config, recorder.run_dir / f'{name}.png')
             def failure_handler(exc):
                 recorder.fail(exc, skills, 21)
@@ -126,7 +132,7 @@ def execute_trial(*, mode='roles', scenario='nominal', output_root=None, snapsho
                 transport_strategy=transport_strategy, on_transport_preflight_failure=preflight_failure)
             if observer:
                 observer(skills)  # Local test observer; never exposed through CLI or policy tools.
-            state = run_assembly_graph(skills, failure_handler=failure_handler, mode=mode, scenario=scenario, on_event=event, memory_lookup=lookup, recovery_budget=recovery_budget, policies=policies, condition_fingerprint=fingerprint, transport_replan_budget=transport_replan_budget, recipe_summaries=knowledge.recipe_summaries() if knowledge else None)
+            state = run_assembly_graph(skills, failure_handler=failure_handler, mode=mode, scenario=scenario, on_event=event, memory_lookup=lookup, recovery_budget=recovery_budget, policies=policies, condition_fingerprint=fingerprint, transport_replan_budget=transport_replan_budget, recipe_summaries=knowledge.recipe_summaries() if knowledge else None, propose_grasp=propose_grasp)
             status, error = state['status'], state['error']
             if snapshots:
                 save_snapshot(model, data, config, recorder.run_dir / 'final.png')
@@ -138,6 +144,7 @@ def execute_trial(*, mode='roles', scenario='nominal', output_root=None, snapsho
             client.close()
     usage = meter.summary() if meter is not None else {'api_calls': 0, 'input_tokens': 0, 'output_tokens': 0, 'api_cost': 0}
     result = {'status': status, 'error': error, 'run_dir': str(recorder.run_dir), 'graph_state': state,
+              'grasp_mode': 'proposed' if propose_grasp else 'fixed',
               'policy_kind': policy_kind, 'policy_mode': mode, 'scene_case': scene_case,
               'transport_strategy': transport_strategy, 'transfer_obstacle': transfer_obstacle,
               'transport_preflight_failures': preflight_reports,
@@ -165,6 +172,7 @@ if __name__ == '__main__':
     parser.add_argument('--llm-config', type=Path, help='Explicit live single-policy config; omitted means scripted/offline')
     parser.add_argument('--mode', choices=['single', 'roles'], default='roles')
     parser.add_argument('--scenario', choices=['nominal', 'alignment_offset'], default='nominal')
+    parser.add_argument('--propose-grasp', action='store_true', help='Require a policy-generated XYZ and jaw angle, tested on a physics copy before pick')
     parser.add_argument('--snapshots', action='store_true')
     parser.add_argument('--transport-strategy', choices=['direct', 'direct_then_rrt'], default='direct')
     parser.add_argument('--transfer-obstacle', action='store_true', help='Fixed obstacle from scene initialization; first-joint test only')
@@ -175,5 +183,5 @@ if __name__ == '__main__':
     parser.add_argument('--knowledge-bundle', type=Path, help='Frozen development evidence, verified before motion')
     parser.add_argument('--knowledge-mode', choices=['memory', 'recipes', 'both'], default='both')
     args = parser.parse_args()
-    result = execute_trial(mode=args.mode, scenario=args.scenario, snapshots=args.snapshots, use_memory=args.memory, recovery_budget=args.recovery_budget, llm_config_path=args.llm_config, transport_strategy=args.transport_strategy, transfer_obstacle=args.transfer_obstacle, transport_replan_budget=args.transport_replan_budget, scene_case=args.scene_case, knowledge_bundle=args.knowledge_bundle, knowledge_mode=args.knowledge_mode)
+    result = execute_trial(mode=args.mode, scenario=args.scenario, snapshots=args.snapshots, use_memory=args.memory, recovery_budget=args.recovery_budget, llm_config_path=args.llm_config, transport_strategy=args.transport_strategy, transfer_obstacle=args.transfer_obstacle, transport_replan_budget=args.transport_replan_budget, scene_case=args.scene_case, knowledge_bundle=args.knowledge_bundle, knowledge_mode=args.knowledge_mode, propose_grasp=args.propose_grasp)
     raise SystemExit(0 if result['status'] == 'success' else 1)

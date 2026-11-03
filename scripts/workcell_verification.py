@@ -50,7 +50,11 @@ class WorkcellVerifier:
             if not allowed:
                 names = [self.model.geom(int(g)).name or f"geom#{g}" for g in pair]
                 raise FailureEvent(FailureCode.PLANNED_CONTACT if planned else FailureCode.UNEXPECTED_CONTACT,
-                                   f"Forbidden contact: {names}")
+                                   f"Forbidden contact: {names}",
+                                   violations=[{"geoms": names, "bodies": [self.model.body(self.model.geom_bodyid[g]).name
+                                                                           for g in pair],
+                                                "signed_distance_m": float(contact.dist),
+                                                "position_world_m": contact.pos.copy()}])
             maximum_penetration = max(maximum_penetration, -float(contact.dist))
             if maximum_penetration > 0.003:
                 raise FailureEvent(FailureCode.PLANNED_CONTACT if planned else FailureCode.UNEXPECTED_CONTACT,

@@ -42,7 +42,7 @@ class AssemblySkills:
             raise FailureEvent(FailureCode.NOT_SETTLED, "Part is not stably supported by table.")
         return self.observe()
 
-    def approach(self, part_id):
+    def approach(self, part_id, *, grasp=None):
         if part_id != self.config["part"]["id"] or self.motion.held_pose is not None:
             raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, "Unknown part or gripper already occupied.")
         size = self.config["part"]["size_m"]
@@ -55,24 +55,38 @@ class AssemblySkills:
         row = self.verifier.sample(self.data, self.motion.reference, allow_support=True, allow_grasp=False)
         if not row["supported"] or row["part_speed_m_s"] > 0.001 or row["pad_gap_mm"] < 80:
             raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, "Observe a settled box and an open gripper first.")
-        grasp_position = body.xpos.copy() + [0, 0, GRASP_TCP_ABOVE_CENTER_M]
-        grasp_rotation = rotation @ DOWNWARD_TCP
+        center = body.xpos.copy()
+        if grasp is None:
+            grasp_position = center + [0, 0, GRASP_TCP_ABOVE_CENTER_M]
+            grasp_rotation = rotation @ DOWNWARD_TCP
+        else:
+            from post_grasp import bounds_issue, world_grasp
+            issue = bounds_issue(grasp, size)
+            if issue:
+                raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, issue)
+            grasp_position, grasp_rotation = world_grasp(center, rotation, grasp, DOWNWARD_TCP)
         self.stage("approach_hover")
         self.motion.move(grasp_position + [0, 0, HOVER_M], grasp_rotation)
         # Re-observe after the hover: do not descend toward an outdated object location.
         body = self.data.body(part_name(self.config))
-        if (np.linalg.norm(body.xpos + [0, 0, GRASP_TCP_ABOVE_CENTER_M] - grasp_position) > 0.001
+        if (np.linalg.norm(body.xpos - center) > 0.001
                 or rotation_error(body.xmat.reshape(3, 3), rotation) > math.radians(1)):
             raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, "Part moved during approach; re-observation required.")
         self.stage("approach_lower")
         rows = self.motion.move(grasp_position, grasp_rotation)
         result = {"skill": "approach/v1", "status": "success", "part_id": part_id,
                   "final_tcp_error_m": rows[-1]["tcp_position_error_m"], "observation": self.observe()}
+        if grasp is not None:
+            result.update(proposed_grasp=dict(grasp), commanded_tcp_world_m=grasp_position.tolist(),
+                          commanded_tcp_rotation_world=grasp_rotation.tolist())
         self.results.append(result)
         return result
 
-    def pick(self, part_id):
-        self.approach(part_id)
+    def pick(self, part_id, *, grasp=None):
+        if grasp is None:
+            self.approach(part_id)
+        else:
+            self.approach(part_id, grasp=grasp)
         self.stage("pick_close")
         # Stop on measured bilateral contact instead of crushing toward fully closed.
         consecutive = 0

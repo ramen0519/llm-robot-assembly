@@ -42,7 +42,10 @@ def condition_fingerprint(resolved):
             or resolved['joint'].get('product_candidate') != 'four_post_frame_v1'
             or not isinstance(resolved.get('simulator_version'), str)):
         raise ValueError('Only recorded MuJoCo first-joint simulation conditions are supported.')
-    return digest({key: resolved[key] for key in ('config', 'joint', 'simulator_version', 'environment', 'observation_source')})
+    conditions = {key: resolved[key] for key in ('config', 'joint', 'simulator_version', 'environment', 'observation_source')}
+    if resolved.get('grasp_mode', 'fixed') != 'fixed':
+        conditions['grasp_mode'] = resolved['grasp_mode']
+    return digest(conditions)
 
 
 def experience_from_run(run_dir):

@@ -27,11 +27,12 @@ class AssemblyState(TypedDict):
     policy_mode: str
     error: str | None
     experiences: list[dict]
+    grasp_trials: list[dict]
 
 
 def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, on_event=None,
                        scenario='nominal', recovery_budget=1, memory_lookup=None,
-                       task_id='four_post_frame_first_joint/v1', insert_result_skill='insert_post/v1', condition_fingerprint=None, transport_replan_budget=0, recipe_summaries=None):
+                       task_id='four_post_frame_first_joint/v1', insert_result_skill='insert_post/v1', condition_fingerprint=None, transport_replan_budget=0, recipe_summaries=None, propose_grasp=False):
     if mode not in ('single', 'roles') or scenario not in ('nominal', 'alignment_offset'):
         raise ValueError('Unknown policy mode/scenario.')
     if type(recovery_budget) is not int or recovery_budget not in (0, 1):
@@ -50,7 +51,7 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
     initial = {'status': 'running', 'observation': None, 'observation_revision': 0,
                'active_role': 'assembly', 'action': None, 'completed': [], 'last_result': None,
                'verification': None, 'failures': [], 'pending_failure': None, 'recoveries': 0, 'transport_replans': 0,
-               'policy_calls': 0, 'policy_mode': mode, 'error': None, 'experiences': []}
+               'policy_calls': 0, 'policy_mode': mode, 'error': None, 'experiences': [], 'grasp_trials': []}
     fault_injected = False
 
     def settle(state):
@@ -80,9 +81,25 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
                    'allowed_skills': allowed_skills(state['completed'], state['pending_failure'], state['recoveries'], recovery_budget,
                        transport_replan_available=skills.insert_replan_available() if transport_replan_budget else False,
                        transport_replans=state['transport_replans'], transport_replan_budget=transport_replan_budget)}
+        if propose_grasp and 'pick' in context['allowed_skills']:
+            from post_grasp import MAX_PROPOSALS, grasp_geometry
+            context['grasp_task'] = {'geometry': grasp_geometry(skills), 'previous_trials': state['grasp_trials'],
+                                     'attempts_remaining': MAX_PROPOSALS - len(state['grasp_trials'])}
         proposal = validate_proposal(policies[role].propose(deepcopy(context)), context)
         return {'action': proposal, 'policy_calls': state['policy_calls'] + 1,
                 'last_result': None, 'verification': None}
+
+    def check_grasp(state):
+        from post_grasp import MAX_PROPOSALS
+        action = state['action']
+        if state['observation'] != _snapshot(skills) or action['observation_revision'] != state['observation_revision']:
+            raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, 'Observation changed before grasp preflight.')
+        trial = skills.check_post_grasp(action['grasp'])
+        trial['observation_revision'] = state['observation_revision']
+        trials = [*state['grasp_trials'], trial]
+        if not trial['accepted'] and len(trials) >= MAX_PROPOSALS:
+            return {'grasp_trials': trials, 'status': 'stopped', 'error': 'Grasp proposal budget exhausted before pick.'}
+        return {'grasp_trials': trials}
 
     def execute(state):
         nonlocal fault_injected
@@ -91,7 +108,14 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
             raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, 'Policy action is stale; observe again.')
         name = a['skill']
         if name == 'pick':
-            result = skills.pick(a['part_id'])
+            if propose_grasp:
+                trial = state['grasp_trials'][-1]
+                if (not trial['accepted'] or trial['grasp'] != a['grasp']
+                        or trial['observation_revision'] != state['observation_revision']):
+                    raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, 'No accepted current grasp.')
+                result = skills.pick(a['part_id'], grasp=a['grasp'])
+            else:
+                result = skills.pick(a['part_id'])
         elif name == 'insert':
             offset = [.006, 0.] if scenario == 'alignment_offset' and not fault_injected else None
             fault_injected = True  # Scenario perturbation is explicit, separate from the policy.
@@ -162,6 +186,8 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
             if on_event:
                 on_event(json_safe({'node': name, 'status': current['status'], 'active_role': current['active_role'],
                                    'observation_revision': current['observation_revision'], 'action': current['action'],
+                                   **({'grasp_trial': current['grasp_trials'][-1]}
+                                      if name == 'check_grasp' and update.get('grasp_trials') else {}),
                                    'completed': current['completed'], 'recoveries': current['recoveries'],
                                    'transport_replans': current['transport_replans'],
                                    'simulation_time_s': float(skills.data.time), 'failure_count': len(current['failures']),
@@ -173,9 +199,14 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
     graph = StateGraph(AssemblyState)
     for name, function in [('settle', settle), ('observe', observe), ('decide', decide), ('execute', execute), ('verify', verify)]:
         graph.add_node(name, guarded(name, function))
+    graph.add_node('check_grasp', guarded('check_grasp', check_grasp))
     graph.add_edge(START, 'settle')
-    for source, target in [('settle', 'observe'), ('observe', 'decide'), ('decide', 'execute'), ('verify', 'observe')]:
+    for source, target in [('settle', 'observe'), ('observe', 'decide'), ('verify', 'observe')]:
         graph.add_conditional_edges(source, lambda state, target=target: target if state['status'] == 'running' else END, [target, END])
+    graph.add_conditional_edges('decide', lambda s: END if s['status'] != 'running' else (
+        'check_grasp' if propose_grasp and s['action']['skill'] == 'pick' else 'execute'), ['check_grasp', 'execute', END])
+    graph.add_conditional_edges('check_grasp', lambda s: END if s['status'] != 'running' else (
+        'execute' if s['grasp_trials'][-1]['accepted'] else 'observe'), ['execute', 'observe', END])
     graph.add_conditional_edges('execute', lambda state: END if state['status'] != 'running' else (
         'observe' if state['last_result'] is None else 'verify'), ['observe', 'verify', END])
     with tracing_context(enabled=False):

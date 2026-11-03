@@ -1,11 +1,11 @@
 """Physically grasp, align, insert, release and independently verify one post."""
 import math
-from copy import deepcopy
+from copy import copy, deepcopy
 import mujoco
 import numpy as np
 
 from assembly_skills import AssemblySkills, HOVER_M, LIFT_M
-from failure_report import FailureCode, FailureEvent
+from failure_report import FailureCode, FailureEvent, json_safe
 from insertion_scene import BASE_NAME
 from view_tcp import read_tcp_pose
 from workcell_motion import WorkcellMotion
@@ -110,6 +110,32 @@ class InsertionSkills(AssemblySkills):
         observation['assembly_joint'] = {k: (v.tolist() if isinstance(v, np.ndarray) else deepcopy(v))
                                          for k, v in self.verifier.joint.items()}
         return observation
+
+    def check_post_grasp(self, grasp):
+        """Try the proposed grasp and nominal insertion on an independent copy before live motion."""
+        from post_grasp import bounds_issue, pad_clearance_at_seating
+        outcome = {'grasp': dict(grasp), 'source': 'mujoco_preflight_copy',
+                   'live_start_s': float(self.data.time), 'accepted': False}
+        issue = bounds_issue(grasp, self.config['part']['size_m'])
+        if issue:
+            return {**outcome, 'phase': 'grasp_bounds', 'failure_code': 'INPUT_OR_PRECONDITION_INVALID',
+                    'message': issue}
+        trial = InsertionSkills(self.model, copy(self.data), self.config, self.verifier.joint,
+                                transport_strategy=self.transport_strategy)
+        trial.motion.reference = self.motion.reference.copy()
+        trial.motion.gripper_command = self.motion.gripper_command
+        try:
+            trial.pick(self.config['part']['id'], grasp=grasp)
+            outcome['held_pad_geometry'] = pad_clearance_at_seating(trial)
+            result = trial.insert(self.config['part']['id'], self.config['target']['id'])
+        except FailureEvent as error:
+            if error.code in (FailureCode.MODEL_OR_CONTROL_INVALID, FailureCode.SIMULATION_INVALID):
+                raise
+            return {**outcome, 'phase': error.phase or trial.motion.stage, 'failure_code': error.code.value,
+                    'message': str(error), 'violations': json_safe(error.violations),
+                    'copy_end_s': float(trial.data.time)}
+        return {**outcome, 'accepted': True, 'copy_end_s': float(trial.data.time),
+                'checks': result['checks'], 'minimum_final_depth_m': result['minimum_final_depth_m']}
 
     def insert_replan_available(self, error=None):
         return self._rejected_insert is not None and self._rejected_insert.available(self, error)

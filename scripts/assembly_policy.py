@@ -36,6 +36,8 @@ def allowed_skills(completed, pending_failure, recoveries, recovery_budget, *, t
 
 def validate_proposal(value, context):
     fields = {'skill', 'part_id', 'target_id', 'observation_revision', 'reason'}
+    if context.get('grasp_task') is not None:
+        fields.add('grasp')
     if not isinstance(value, dict) or set(value) != fields:
         raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, 'Policy proposal must match the exact action contract.')
     if (value['skill'] not in context['allowed_skills'] or value['part_id'] != context['part_id']
@@ -44,6 +46,11 @@ def validate_proposal(value, context):
             or value['observation_revision'] != context['observation_revision']
             or not isinstance(value['reason'], str) or not 1 <= len(value['reason']) <= 512):
         raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, 'Unknown skill/part/target, stale observation, or invalid rationale.')
+    if 'grasp' in fields:
+        from post_grasp import numeric_grasp
+        if ((value['skill'] == 'pick' and not numeric_grasp(value['grasp']))
+                or (value['skill'] != 'pick' and value['grasp'] is not None)):
+            raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, 'Pick needs a numeric grasp; stop needs null.')
     return value.copy()
 
 
