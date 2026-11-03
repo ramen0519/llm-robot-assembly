@@ -12,6 +12,9 @@ max_total_tokens = 60000
 max_cost_usd = "0"
 input_usd_per_million = "0"
 output_usd_per_million = "0"
+# Optional verified rates. Without a write rate the ledger stops on nonzero cache writes.
+cached_input_usd_per_million = ""
+cache_write_30m_usd_per_million = ""
 pricing_source = ""
 pricing_as_of = ""
 timeout_seconds = 45.0

@@ -50,8 +50,7 @@ def diagnose(config_path=ROOT / 'config/llm.example.toml', *, output_root=None):
         if not key_present:
             live_issues.append('Configured API key environment variable is absent.')
         reserve_tokens = config.max_input_tokens + config.max_output_tokens
-        reserve_cost = (Decimal(config.max_input_tokens) * Decimal(config.input_usd_per_million)
-                        + Decimal(config.max_output_tokens) * Decimal(config.output_usd_per_million)) / Decimal(1000000)
+        reserve_cost = config.request_reserve_usd()
         if reserve_tokens > config.max_total_tokens or reserve_cost > Decimal(config.max_cost_usd):
             live_issues.append('A single worst-case request does not fit the configured budget.')
     except Exception:

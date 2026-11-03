@@ -8,7 +8,7 @@ Windows 앱 제어가 기존 가상환경의 Python 실행을 차단했다(4551)
 
 로컬 설정은 첫 정상 조립용으로 `gpt-6-luna`, 추론 강도 `low`, 실행당 모델 요청 최대 4회, 프로그램 추정 예산 0.01달러다. [OpenAI 공식 모델 사양과 단가](https://developers.openai.com/api/docs/models/gpt-6-luna)
 
-설치 버전과 3초 물리 안정화 검사는 통과했다. 기록은 `runs/readiness/20261103T061234_202547Z_513af558/readiness.json`에 있다. 진단 셸의 API 호출은 0회였다. 키 유효성과 계정의 모델 사용 권한은 키를 입력한 PowerShell에서 첫 호출로 확인한다.
+설치 버전과 3초 물리 안정화 검사는 통과했다. 기록은 `runs/readiness/20261103T061234_202547Z_513af558/readiness.json`에 있다. 진단 셸의 API 호출은 0회였다. 11월 3일 후속 실제 시험에서 해당 키로 Luna 호출과 첫 기둥 정상 조립에 성공했다. [21E 결과](STEP_21E_FIRST_LIVE_LUNA.md)
 
 프로젝트 폴더에서 아래 명령을 한 번 실행한다. 실제 모델이 스킬을 선택하고 시뮬레이션이 기둥 하나를 집어 넣는 시험이다.
 

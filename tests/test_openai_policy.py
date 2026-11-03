@@ -199,6 +199,40 @@ class OpenAIPolicyTests(unittest.TestCase):
         ApiLedger(settings(),path)
         with self.assertRaises(FileExistsError): ApiLedger(settings(),path)
 
+    def test_default_cache_write_reported_by_luna_and_subsequent_read(self):
+        config = settings(input_usd_per_million='0.10', cached_input_usd_per_million='0.01',
+                          cache_write_30m_usd_per_million='0.125', output_usd_per_million='0.50')
+        def live_usage(response):
+            response['usage'] = {'input_tokens': 1365, 'output_tokens': 68, 'total_tokens': 1433,
+                                 'input_tokens_details': {'cache_write_tokens': 1230, 'cached_tokens': 0},
+                                 'output_tokens_details': {'reasoning_tokens': 0}}
+        policy, _ = self.policy(config=config, mutate=live_usage)
+        self.assertEqual(policy.propose(context())['skill'], 'pick')
+        self.assertEqual(policy.ledger.summary()['api_cost'], 0.00020125)
+        self.assertEqual(policy.ledger.summary()['cache_write_30m_tokens'], 1230)
+        self.assertEqual(policy.ledger.summary()['unresolved_cost_reserve_usd'], 0)
+        policy, _ = self.policy(config=config)  # 500 inputs, including 50 cache reads, and 200 outputs
+        policy.propose(context())
+        self.assertEqual(policy.ledger.summary()['api_cost'], 0.0001455)
+
+    def test_cache_write_budget_and_invalid_usage_stop_before_motion(self):
+        config = settings(input_usd_per_million='0.10', cache_write_30m_usd_per_million='0.125',
+                          output_usd_per_million='0.50')
+        # Ordinary inputs would fit $0.0023, but the 30-minute write reserve would not.
+        policy, requests = self.policy(config=replace(config, max_cost_usd='0.0023'))
+        with self.assertRaises(FailureEvent) as blocked:
+            policy.propose(context())
+        self.assertEqual(blocked.exception.code, FailureCode.POLICY_BUDGET_EXCEEDED)
+        self.assertEqual(requests, [])
+        for details in ({'cached_tokens': 250, 'cache_write_tokens': 251},
+                        {'cache_write_tokens': 10, 'cache_write_tokens_details': {'ttl_30m_tokens': 0, 'ttl_12h_tokens': 10}}):
+            with self.subTest(details=details):
+                policy, _ = self.policy(config=config, mutate=lambda r: r['usage'].update(input_tokens_details=details))
+                with self.assertRaises(FailureEvent) as caught:
+                    policy.propose(context())
+                self.assertEqual(caught.exception.code, FailureCode.POLICY_USAGE_UNKNOWN)
+                self.assertEqual(policy.ledger.summary()['known_input_tokens'], 0)
+
     def test_invalid_or_huge_context_rejected_before_http(self):
         for kind in ('invalid','huge'):
             c=context()

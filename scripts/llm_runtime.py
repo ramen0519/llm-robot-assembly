@@ -28,6 +28,15 @@ class LlmConfig:
     pricing_as_of: str = ''
     timeout_seconds: float = 45.
     reasoning_effort: str = ''
+    cached_input_usd_per_million: str = ''
+    cache_write_30m_usd_per_million: str = ''
+
+    def request_reserve_usd(self):
+        rates = (self.input_usd_per_million, self.cached_input_usd_per_million,
+                 self.cache_write_30m_usd_per_million)
+        highest_input = max(Decimal(rate) for rate in rates if rate)
+        return (self.max_input_tokens * highest_input
+                + self.max_output_tokens * Decimal(self.output_usd_per_million)) / Decimal(1000000)
 
     def validate(self, *, live=False):
         if type(self.enabled) is not bool or self.provider != 'openai':
@@ -46,8 +55,11 @@ class LlmConfig:
             raise ValueError('Timeout must be between 1 and 60 seconds.')
         if self.reasoning_effort not in ('', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'):
             raise ValueError('Unknown reasoning effort; model support must be checked separately.')
-        for name in ('max_cost_usd', 'input_usd_per_million', 'output_usd_per_million'):
+        for name in ('max_cost_usd', 'input_usd_per_million', 'output_usd_per_million',
+                     'cached_input_usd_per_million', 'cache_write_30m_usd_per_million'):
             value = getattr(self, name)
+            if name in ('cached_input_usd_per_million', 'cache_write_30m_usd_per_million') and value == '':
+                continue
             if not isinstance(value, str):
                 raise ValueError('Use quoted decimal strings for prices/budget.')
             number = Decimal(value)
@@ -97,6 +109,7 @@ class ApiLedger:
         self.path.touch(exist_ok=False)
         self.http_requests = self.count_requests = self.model_requests = 0
         self.input_tokens = self.output_tokens = self.cached_tokens = self.reasoning_tokens = 0
+        self.cache_write_tokens = 0
         self.known_cost = Decimal('0')
         self.reserved_cost = Decimal('0')
         self.reserved_tokens = 0
@@ -110,14 +123,20 @@ class ApiLedger:
             stream.flush()
             os.fsync(stream.fileno())
 
-    def cost(self, inputs, outputs):
-        return (Decimal(inputs) * Decimal(self.config.input_usd_per_million)
-                + Decimal(outputs) * Decimal(self.config.output_usd_per_million)) / Decimal(1000000)
+    def cost(self, inputs, outputs, *, cached=0, written=0):
+        config = self.config
+        if written and not config.cache_write_30m_usd_per_million:
+            raise ValueError('No configured rate for default 30-minute cache writes.')
+        ordinary = inputs - cached - written
+        read_rate = config.cached_input_usd_per_million or config.input_usd_per_million
+        return (ordinary * Decimal(config.input_usd_per_million) + cached * Decimal(read_rate)
+                + written * Decimal(config.cache_write_30m_usd_per_million or '0')
+                + outputs * Decimal(config.output_usd_per_million)) / Decimal(1000000)
 
     def ensure_room(self):
         c = self.config
         tokens = c.max_input_tokens + c.max_output_tokens
-        reserve = self.cost(c.max_input_tokens, c.max_output_tokens)
+        reserve = c.request_reserve_usd()
         if (self.halted or self.model_requests >= c.max_model_requests
                 or self.count_requests >= c.max_model_requests
                 or self.input_tokens + self.output_tokens + self.reserved_tokens + tokens > c.max_total_tokens
@@ -139,7 +158,7 @@ class ApiLedger:
         # The count request already consumed one count slot; ensure_room was called
         # before it. Reserve the full input/output caps, not an optimistic estimate.
         self.reserved_tokens += self.config.max_input_tokens + self.config.max_output_tokens
-        self.reserved_cost += self.cost(self.config.max_input_tokens, self.config.max_output_tokens)
+        self.reserved_cost += self.config.request_reserve_usd()
         self.unknown_requests += 1
         self.record('model_request_started', request_hash=request_hash, input_count=input_count,
                     reserved_cost_usd=str(self.reserved_cost), model=self.config.model)
@@ -152,21 +171,31 @@ class ApiLedger:
         inputs, outputs, total = (usage.get(k) for k in ('input_tokens', 'output_tokens', 'total_tokens'))
         if any(type(v) is not int or v < 0 for v in (inputs, outputs, total)) or total != inputs + outputs:
             raise ValueError('Invalid usage totals.')
-        cached = usage.get('input_tokens_details', {}).get('cached_tokens', 0)
-        written = usage.get('input_tokens_details', {}).get('cache_write_tokens', 0)
+        details = usage.get('input_tokens_details', {})
+        cached = details.get('cached_tokens', 0)
+        written = details.get('cache_write_tokens', 0)
         reasoning = usage.get('output_tokens_details', {}).get('reasoning_tokens', 0)
         if (type(cached) is not int or not 0 <= cached <= inputs or type(reasoning) is not int
-                or not 0 <= reasoning <= outputs or type(written) is not int or written != 0):
-            raise ValueError('Invalid details or unsupported cache-write pricing.')
+                or not 0 <= reasoning <= outputs or type(written) is not int or not 0 <= written <= inputs - cached):
+            raise ValueError('Invalid or overlapping usage details.')
+        # This adapter requests the default cache lifetime, without breakpoint overrides.
+        lifetimes = details.get('cache_write_tokens_details')
+        if lifetimes is not None:
+            if (not isinstance(lifetimes, dict) or set(lifetimes) != {'ttl_30m_tokens', 'ttl_12h_tokens'}
+                    or any(type(value) is not int for value in lifetimes.values())
+                    or lifetimes['ttl_30m_tokens'] != written or lifetimes['ttl_12h_tokens'] != 0):
+                raise ValueError('Unexpected cache lifetime or inconsistent write totals.')
         if inputs > self.config.max_input_tokens or outputs > self.config.max_output_tokens:
             raise ValueError('Reported usage exceeded the reserved caps.')
+        charge = self.cost(inputs, outputs, cached=cached, written=written)
         self.input_tokens += inputs
         self.output_tokens += outputs  # Includes reasoning; do not add it twice.
         self.cached_tokens += cached
+        self.cache_write_tokens += written
         self.reasoning_tokens += reasoning
-        self.known_cost += self.cost(inputs, outputs)
+        self.known_cost += charge
         self.reserved_tokens -= self.config.max_input_tokens + self.config.max_output_tokens
-        self.reserved_cost -= self.cost(self.config.max_input_tokens, self.config.max_output_tokens)
+        self.reserved_cost -= self.config.request_reserve_usd()
         self.unknown_requests -= 1
 
     def summary(self):
@@ -178,9 +207,12 @@ class ApiLedger:
                 'output_tokens': None if unknown else self.output_tokens,
                 'known_input_tokens': self.input_tokens, 'known_output_tokens': self.output_tokens,
                 'cached_input_tokens': self.cached_tokens, 'reasoning_tokens': self.reasoning_tokens,
+                'cache_write_30m_tokens': self.cache_write_tokens,
                 'api_cost': None if unknown else float(self.known_cost),
                 'known_api_cost_estimate_usd': float(self.known_cost),
                 'unresolved_cost_reserve_usd': float(self.reserved_cost),
                 'unknown_usage_requests': self.unknown_requests,
-                'cost_basis': 'configured_uncached_input_and_output_rates_no_discounts',
+                'cost_basis': ('configured_input_cache_and_output_rates'
+                               if self.config.cached_input_usd_per_million or self.config.cache_write_30m_usd_per_million
+                               else 'configured_uncached_input_and_output_rates_no_discounts'),
                 'actual_invoice_verified': False, 'automatic_retries': 0, 'halted': self.halted}
