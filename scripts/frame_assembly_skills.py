@@ -165,8 +165,11 @@ class FrameSkills(InsertionSkills):
                            transport_strategy=self.transport_strategy, empty_approach_strategy=self.empty_approach_strategy)
 
     def grasp_geometry(self):
-        if self.registry[self.active]['kind'] != 'sleeve':
-            raise ValueError('Numeric frame grasp proposals currently support sleeves.')
+        kind = self.registry[self.active]['kind']
+        if kind == 'post':
+            return super().grasp_geometry()
+        if kind != 'sleeve':
+            raise ValueError('Numeric frame grasps require a post or sleeve.')
         packet = super().grasp_geometry()
         packet.pop('socket_insertion_depth_mm')
         dims = self.verifier.joint['dimensions_m']
@@ -181,6 +184,8 @@ class FrameSkills(InsertionSkills):
         return packet
 
     def held_pad_geometry(self):
+        if self.registry[self.active]['kind'] == 'post':
+            return super().held_pad_geometry()
         from post_grasp import lowest_pad_above_part_bottom
         lowest = round(float(lowest_pad_above_part_bottom(self) * 1000), 2)
         return {'lowest_pad_above_sleeve_bottom_mm': lowest,
@@ -226,8 +231,8 @@ class FrameSkills(InsertionSkills):
         else:
             from post_grasp import bounds_issue, world_grasp
             issue = bounds_issue(grasp, self.config['part']['size_m'])
-            if issue or entry['kind'] != 'sleeve':
-                raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, issue or 'Expected a sleeve grasp.')
+            if issue or entry['kind'] not in ('post', 'sleeve'):
+                raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, issue or 'Expected a post or sleeve grasp.')
             target, orientation = world_grasp(center, rotation, grasp, DOWNWARD_TCP)
         self.stage('approach_hover')
         self._move_to_hover(target + [0., 0., HOVER_M], orientation)

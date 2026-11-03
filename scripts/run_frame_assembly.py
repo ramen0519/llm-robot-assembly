@@ -19,9 +19,22 @@ from workcell_scene import ROOT, set_workcell_camera, part_name
 from workcell_verification import rotation_error
 
 
+def episode_boundary(model, data, registry, installed):
+    """Fingerprint the complete integrator state, plus human-readable measured part poses."""
+    spec = mujoco.mjtState.mjSTATE_INTEGRATION
+    state = np.empty(mujoco.mj_stateSize(model, spec))
+    mujoco.mj_getState(model, data, state, spec)
+    parts = {name: {'position_world_m': data.body(part_name(entry['config'])).xpos.tolist(),
+                    'quaternion_wxyz': data.body(part_name(entry['config'])).xquat.tolist()}
+             for name, entry in registry.items()}
+    return {'time_s': float(data.time), 'installed': sorted(installed), 'parts': parts,
+            'integration_sha256': hashlib.sha256(state.tobytes()).hexdigest()}
+
+
 def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='scripted', scenario='nominal', show_viewer=False,
                   transport_strategy='direct', transfer_obstacle=False, observer=None,
-                  transport_replan_budget=0, empty_approach_strategy=None, policies=None, planner_candidate=None):
+                  transport_replan_budget=0, empty_approach_strategy=None, policies=None, planner_candidate=None,
+                  post_sleeve_llm_config=None):
     if mode not in ('scripted', 'single', 'roles') or scenario not in ('nominal', 'first_alignment_offset'):
         raise ValueError('Unknown orchestration mode/scenario')
     if mode == 'scripted' and scenario != 'nominal':
@@ -36,6 +49,9 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
         raise ValueError('Policy replanning requires graph mode and direct transport.')
     if empty_approach_strategy not in (None, 'direct', 'direct_then_rrt'):
         raise ValueError('Unknown empty-gripper approach strategy.')
+    live_pair = post_sleeve_llm_config is not None
+    if live_pair and (mode != 'single' or product_count != 3 or policies is not None or planner_candidate is not None):
+        raise ValueError('The live post/sleeve cell requires 3 parts, single policy and its built-in prerequisite order.')
     if policies is not None and (mode == 'scripted' or not isinstance(policies, dict)
             or any(getattr(p, 'kind', None) != 'scripted' for p in policies.values())):
         raise ValueError('Injected policies must be labelled scripted and use graph mode; live API accounting is not enabled here.')
@@ -48,12 +64,25 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
     transport_attempts, empty_approach_attempts, motion_preflight_failures, part_metrics = {}, {}, [], {}
     policy_replan_attempts = {}
     planner_provenance = None
+    client, ledger = None, None
+    part_episodes = {}
+    previous_end = None
+    track_metrics = (live_pair or transport_strategy != 'direct' or transfer_obstacle or transport_replan_budget
+                     or empty_approach_strategy == 'direct_then_rrt')
     remaining_replans = transport_replan_budget
     remaining_recoveries = 1 if mode != 'scripted' else 0
     from assembly_policy import ScriptedPolicy
     policies = policies if policies is not None else {key: ScriptedPolicy(key) for key in (['single'] if mode == 'single' else ['assembly', 'recovery'])}
     try:
-        model, data, registry = build_frame_scene(product_count, transfer_obstacle=transfer_obstacle)
+        if live_pair:
+            from llm_runtime import ApiLedger, create_openai_client, load_llm_config
+            from openai_policy import OpenAIAssemblyPolicy
+            config = load_llm_config(post_sleeve_llm_config).validate(live=True)
+            client = create_openai_client(config)
+            ledger = ApiLedger(config, recorder.run_dir / 'llm_events.jsonl')
+            policies = {'single': OpenAIAssemblyPolicy(config, client, ledger)}
+        model, data, registry = build_frame_scene(product_count, transfer_obstacle=transfer_obstacle,
+                                                 first_sleeve_cell=live_pair)
         if planner_candidate is not None:
             from planner_candidate_input import load_robot_candidate
             order, planner_provenance = load_robot_candidate(planner_candidate, registry)
@@ -65,11 +94,15 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
             'transport_strategy': transport_strategy, 'transfer_obstacle': transfer_obstacle,
             'empty_approach_strategy': empty_approach_strategy,
             'transport_replan_budget': transport_replan_budget, 'transport_replan_budget_scope': 'episode',
-            'policy_kind': 'scripted', 'orchestration': mode, 'scenario': scenario, 'recovery_budget': remaining_recoveries, 'api_calls': 0, 'simulator_version': mujoco.__version__,
+            'policy_kind': 'openai_responses' if live_pair else 'scripted', 'orchestration': mode, 'scenario': scenario,
+            'recovery_budget': remaining_recoveries, 'simulator_version': mujoco.__version__,
+            **({'llm_config': config.public(), 'api_calls_at_start': 0, 'initial_installed': [],
+                'sequence': list(registry)} if live_pair else {'api_calls': 0}),
             'implementation_sha256': {name: hashlib.sha256((ROOT / 'scripts' / name).read_bytes()).hexdigest()
                 for name in ('frame_assembly_scene.py', 'frame_assembly_skills.py', 'workcell_motion.py', 'run_frame_assembly.py',
                              'insertion_scene.py', 'insertion_skills.py', 'loaded_transport.py', 'joint_path_planner.py', 'empty_approach.py',
-                             'assembly_graph.py', 'assembly_policy.py', 'rejected_insert.py', 'planner_candidate_input.py')}})
+                             'assembly_graph.py', 'assembly_policy.py', 'rejected_insert.py', 'planner_candidate_input.py',
+                             'assembly_skills.py', 'post_grasp.py', 'openai_policy.py', 'llm_runtime.py', 'insertion_recovery.py')}})
         viewer_context = mujoco.viewer.launch_passive(model, data) if show_viewer else nullcontext(None)
         with viewer_context as viewer, recorder.trace_path.open('w', newline='', encoding='utf-8') as stream, (recorder.run_dir / 'graph_events.jsonl').open('w', encoding='utf-8') as events:
             clock = {'last_draw': -1., 'wall': time.monotonic(), 'sim': float(data.time)}
@@ -80,7 +113,7 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
             def sample(row):
                 writer.writerow({'active_part_id': skills.active, **row})
                 recorder.remember(skills, row)
-                if transport_strategy != 'direct' or transfer_obstacle or transport_replan_budget or empty_approach_strategy == 'direct_then_rrt':
+                if track_metrics:
                     metrics = part_metrics[skills.active]
                     metrics['verified_samples'] += 1
                     for name in installed:
@@ -125,6 +158,13 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
                 transport_attempts[active] = skills.transport_attempts
                 policy_replan_attempts[active] = skills.replan_attempts
                 empty_approach_attempts[active] = skills.empty_approach_attempts
+                if live_pair:
+                    start = episode_boundary(model, data, registry, installed)
+                    if previous_end is not None and start != previous_end:
+                        raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, 'Scene changed between component installations.')
+                    part_episodes[active] = {'start': start}
+                    if not installed and snapshots:
+                        save_snapshot(model, data, skills.config, recorder.run_dir / 'before_assembly.png')
                 if observer:
                     observer(skills)  # Test hook; not exposed through CLI/policy actions.
                 if mode == 'scripted':
@@ -155,7 +195,7 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
                         scenario='alignment_offset' if scenario == 'first_alignment_offset' and active == 'post_1' else 'nominal',
                         recovery_budget=remaining_recoveries, on_event=event,
                         transport_replan_budget=min(1, replans_at_part_start),
-                        task_id='four_post_frame_wide/' + active, insert_result_skill=expected)
+                        task_id='four_post_frame_wide/' + active, insert_result_skill=expected, propose_grasp=live_pair)
                     graph_states[active] = state
                     remaining_recoveries -= state['recoveries']
                     if state['status'] != 'success':
@@ -164,16 +204,22 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
                     result = skills.results[-1]
                 installed.add(active)
                 results.append(result)
+                if live_pair:
+                    previous_end = episode_boundary(model, data, registry, installed)
+                    part_episodes[active].update(end=previous_end, executed_approach=skills.results[0])
                 if snapshots:
                     save_snapshot(model, data, skills.config, recorder.run_dir / f'after_{active}.png')
             else:
                 row = skills.verifier.sample(data, skills.motion.reference, allow_support=True, allow_grasp=False)
-                skills.verifier.verify_insertion([row])
+                skills.insertion_evidence([row])
                 skills.verifier.verify_other_parts(data)
                 status = 'success'
     except (Exception, KeyboardInterrupt) as exc:
         status = recorder.fail(exc, skills, 23)
         error = str(exc)
+    finally:
+        if client is not None:
+            client.close()
     result = {'status': status, 'error': error, 'run_dir': str(recorder.run_dir),
               'planner_provenance': planner_provenance, 'execution_order': [r['part_id'] for r in results],
               'product_parts_present': product_count, 'robot_installations_goal': product_count - 1,
@@ -190,10 +236,12 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
               'policy_replan_attempts': policy_replan_attempts,
               'transport_attempts': transport_attempts, 'empty_approach_attempts': empty_approach_attempts,
               'motion_preflight_failures': motion_preflight_failures,
-              'part_metrics': part_metrics if transport_strategy != 'direct' or transfer_obstacle or transport_replan_budget or empty_approach_strategy == 'direct_then_rrt' else {},
+              'part_metrics': part_metrics if track_metrics else {},
               'recovery_budget_remaining': remaining_recoveries,
               'policy_calls': sum(s['policy_calls'] for s in graph_states.values()),
-              'policy_kind': 'scripted', 'api_calls': 0, 'wall_elapsed_s': time.monotonic() - wall_started}
+              'policy_kind': 'openai_responses' if live_pair else 'scripted', 'api_calls': ledger.model_requests if ledger else 0,
+              **({'part_episodes': part_episodes, 'llm_usage': ledger.summary() if ledger else None} if live_pair else {}),
+              'wall_elapsed_s': time.monotonic() - wall_started}
     write_json(recorder.run_dir / 'result.json', result)
     print(f'{status}: {recorder.run_dir}', flush=True)
     if error:
@@ -204,6 +252,7 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--parts', type=int, choices=range(2, 11), default=6)
+    parser.add_argument('--post-sleeve-llm-config', type=Path, help='Live post then sleeve in one initially empty fixture (--parts 3 --mode single)')
     parser.add_argument('--snapshots', action='store_true')
     parser.add_argument('--transport-strategy', choices=['direct', 'direct_then_rrt'], default='direct')
     parser.add_argument('--transfer-obstacle', action='store_true', help='Fixed transfer test obstacle, present from episode start')
@@ -217,5 +266,5 @@ if __name__ == '__main__':
     result = execute_trial(product_count=args.parts, snapshots=args.snapshots, mode=args.mode, scenario=args.scenario,
         show_viewer=args.viewer, transport_strategy=args.transport_strategy, transfer_obstacle=args.transfer_obstacle,
         empty_approach_strategy=args.empty_approach_strategy, transport_replan_budget=args.transport_replan_budget,
-        planner_candidate=args.planner_candidate)
+        planner_candidate=args.planner_candidate, post_sleeve_llm_config=args.post_sleeve_llm_config)
     raise SystemExit(0 if result['status'] == 'success' else 1)
