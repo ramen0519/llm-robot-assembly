@@ -3,6 +3,20 @@ import numpy as np
 
 from failure_report import FailureCode, FailureEvent, capture_observation, json_safe
 from view_tcp import read_tcp_pose
+from workcell_verification import rotation_error
+
+
+def alignment_observation(skills, *, allow_support=True):
+    """Measure current alignment and pad contacts without advancing the episode."""
+    row = skills.verifier.sample(skills.data, skills.motion.reference, allow_support=allow_support, allow_grasp=True)
+    body = skills.data.body(skills.verifier.part_body)
+    delta_xy = body.xpos[:2] - skills.verifier.target_position[:2]
+    bottom = skills.verifier.table_z + row['part_bottom_clearance_m']
+    return {'simulation_time_s': float(skills.data.time), 'frame': 'world',
+            'actual_minus_target_xy_m': delta_xy.tolist(), 'lateral_error_m': float(np.linalg.norm(delta_xy)),
+            'rim_clearance_m': float(bottom - skills.verifier.joint['socket_rim_z_world_m']),
+            'orientation_error_rad': rotation_error(body.xmat.reshape(3, 3), skills.verifier.target_rotation),
+            **{key: row[key] for key in ('left_contact', 'right_contact', 'supported', 'part_speed_m_s')}}
 
 
 def recover_alignment(skills, failure):
@@ -18,14 +32,9 @@ def recover_alignment(skills, failure):
     if not before['valid']:
         raise FailureEvent(FailureCode.SIMULATION_INVALID, 'Recovery requires a fresh valid observation.')
     # Read the actual live state again. The old failure report alone is not authority to move.
-    row = skills.verifier.sample(skills.data, skills.motion.reference, allow_support=False, allow_grasp=True)
+    row = alignment_observation(skills, allow_support=False)
     skills.verifier.check_held(skills.data, row, skills.motion.held_pose)
-    body = skills.data.body(skills.verifier.part_body)
-    lateral = float(np.linalg.norm(body.xpos[:2] - skills.verifier.target_position[:2]))
-    bottom = skills.verifier.table_z + row['part_bottom_clearance_m']
-    clearance = float(bottom - skills.verifier.joint['socket_rim_z_world_m'])
-    from workcell_verification import rotation_error
-    orientation = rotation_error(body.xmat.reshape(3, 3), skills.verifier.target_rotation)
+    lateral, clearance, orientation = row['lateral_error_m'], row['rim_clearance_m'], row['orientation_error_rad']
     if (lateral > .020 or clearance < .020 or orientation > np.deg2rad(1)
             or row['supported'] or row['part_speed_m_s'] > .001):
         raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, 'Measured state is outside the bounded alignment-recovery envelope.',

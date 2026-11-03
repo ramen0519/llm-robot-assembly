@@ -18,12 +18,15 @@ from workcell_verification import rotation_error
 
 
 def execute_trial(component='sleeve_1', *, cover_grip='center', snapshots=False,
-                  transport_strategy='direct', transfer_obstacle=False, output_root=None, observer=None, sleeve_llm_config=None):
+                  transport_strategy='direct', transfer_obstacle=False, output_root=None, observer=None, sleeve_llm_config=None,
+                  scenario='nominal'):
     if component not in ('sleeve_1', 'sleeve_2', 'sleeve_3', 'sleeve_4', 'cover'):
         raise ValueError('This probe installs one sleeve or the cover.')
     if transport_strategy not in ('direct', 'direct_then_rrt') or type(transfer_obstacle) is not bool:
         raise ValueError('Invalid transport option.')
     live = sleeve_llm_config is not None
+    if scenario not in ('nominal', 'alignment_offset') or (scenario == 'alignment_offset' and not live):
+        raise ValueError('The alignment-offset probe requires the live first-sleeve graph.')
     if live and (component != 'sleeve_1' or cover_grip != 'center' or transfer_obstacle):
         raise ValueError('Live sleeve proposals require the base, post_1 and sleeve_1 cell.')
     wall_started = time.monotonic()
@@ -56,7 +59,7 @@ def execute_trial(component='sleeve_1', *, cover_grip='center', snapshots=False,
         metrics['previous_parts'] = {name: {'maximum_position_error_m': 0., 'maximum_orientation_error_rad': 0.}
                                      for name in sorted(initial_installed)}
         write_json(recorder.run_dir / 'resolved_config.json', {
-            'environment': 'simulation', 'component': component, 'cover_grip': cover_grip,
+            'environment': 'simulation', 'component': component, 'cover_grip': cover_grip, 'scenario': scenario,
             'initial_preassembled_parts': sorted(initial_installed | {'base'}),
             'robot_installations_goal': 1, 'registry': registry, 'simulator_version': mujoco.__version__,
             'transport_strategy': transport_strategy, 'transfer_obstacle': transfer_obstacle,
@@ -67,7 +70,7 @@ def execute_trial(component='sleeve_1', *, cover_grip='center', snapshots=False,
                              'run_component_probe.py', 'insertion_scene.py', 'insertion_skills.py',
                              'loaded_transport.py', 'joint_path_planner.py', 'empty_approach.py',
                              'assembly_graph.py', 'assembly_skills.py', 'assembly_policy.py', 'openai_policy.py',
-                             'post_grasp.py', 'llm_runtime.py')}})
+                             'post_grasp.py', 'llm_runtime.py', 'insertion_recovery.py')}})
         with recorder.trace_path.open('w', newline='', encoding='utf-8') as stream:
             writer = csv.DictWriter(stream, fieldnames=INSERTION_TRACE_FIELDS)
             writer.writeheader()
@@ -106,6 +109,8 @@ def execute_trial(component='sleeve_1', *, cover_grip='center', snapshots=False,
                 from assembly_graph import run_assembly_graph
                 def failure(exc):
                     recorder.fail(exc, skills, 23)
+                    if snapshots and skills.motion.stage == 'insert_alignment_check':
+                        save_snapshot(model, data, skills.config, recorder.run_dir / 'alignment_failure.png')
                     return json.loads((recorder.run_dir / 'failure_report.json').read_text(encoding='utf-8'))
                 with (recorder.run_dir / 'graph_events.jsonl').open('w', encoding='utf-8') as journal:
                     def event(row):
@@ -113,7 +118,7 @@ def execute_trial(component='sleeve_1', *, cover_grip='center', snapshots=False,
                         journal.flush()
                     graph_state = run_assembly_graph(skills, mode='single', policies={'single': policy},
                         task_id='first_sleeve_on_installed_post/v1', insert_result_skill='insert_sleeve/v1',
-                        propose_grasp=True, on_event=event, failure_handler=failure)
+                        propose_grasp=True, scenario=scenario, on_event=event, failure_handler=failure)
                 status, error = graph_state['status'], graph_state['error']
                 if status == 'success':
                     result = skills.results[-1]
@@ -130,7 +135,7 @@ def execute_trial(component='sleeve_1', *, cover_grip='center', snapshots=False,
             client.close()
     if skills and snapshots:
         save_snapshot(skills.model, skills.data, skills.config, recorder.run_dir / 'final.png')
-    report = {'status': status, 'error': error, 'run_dir': str(recorder.run_dir), 'component': component,
+    report = {'status': status, 'error': error, 'run_dir': str(recorder.run_dir), 'component': component, 'scenario': scenario,
               'initial_preassembled_parts': sorted(initial_installed | {'base'}),
               'robot_installations_goal': 1, 'robot_installed_parts': int(status == 'success'),
               'whole_frame_robot_assembly': False, 'result': result, 'samples': recorder.samples,
@@ -155,10 +160,13 @@ if __name__ == '__main__':
     parser.add_argument('--component', choices=['sleeve_1', 'sleeve_2', 'sleeve_3', 'sleeve_4', 'cover'], default='sleeve_1')
     parser.add_argument('--cover-grip', choices=['center', 'edge'], default='center')
     parser.add_argument('--sleeve-llm-config', type=Path, help='Live single-policy numeric grasp on a preassembled free post_1')
+    parser.add_argument('--scenario', choices=['nominal', 'alignment_offset'], default='nominal',
+                        help='Offset only the first live insert approach by +6 mm in world X; never perturb the grasp trial.')
     parser.add_argument('--snapshots', action='store_true')
     parser.add_argument('--transport-strategy', choices=['direct', 'direct_then_rrt'], default='direct')
     parser.add_argument('--transfer-obstacle', action='store_true', help='Fixed test fixture, present from the start')
     args = parser.parse_args()
     result = execute_trial(args.component, cover_grip=args.cover_grip, snapshots=args.snapshots,
-                           transport_strategy=args.transport_strategy, transfer_obstacle=args.transfer_obstacle, sleeve_llm_config=args.sleeve_llm_config)
+                           transport_strategy=args.transport_strategy, transfer_obstacle=args.transfer_obstacle, sleeve_llm_config=args.sleeve_llm_config,
+                           scenario=args.scenario)
     raise SystemExit(0 if result['status'] == 'success' else 1)

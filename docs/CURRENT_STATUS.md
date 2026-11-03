@@ -5,6 +5,8 @@
 
 ## 지금 되는 것
 
+**슬리브를 쥔 채 발생한 정렬 실패**를 원래 장면에서 측정하고 단일 Luna가 복구를 선택했다. 수평 오차가 6.090mm에서 0.138mm로 줄고 같은 장면에서 설치에 성공했다. [21H 실행 및 측정값](STEP_21H_SLEEVE_ALIGNMENT_RECOVERY.md)
+
 **슬리브 한 개**에서 실제 Luna의 수치 파지 제안, 작업대 간섭 후 수정, 이미 설치된 자유 기둥에 끼우기와 해제 후 관통 검사를 연결했다. [21G 실행 보고서](STEP_21G_PROPOSED_SLEEVE_GRASP.md)
 
 **첫 기둥에서 Luna가 파지 위치와 닫힘 방향을 숫자로 제안한다.** MuJoCo가 복사본에서 삽입까지 검사하고 접촉·손가락 높이를 돌려주면 Luna가 제안을 바꿀 수 있다. 기본 배치에서 설치했고, 트레이를 10mm 옮긴 시험에서는 소켓 벽과의 간섭을 보고 Luna가 파지 높이를 12mm 올려 설치했다. 두 실행 모두 해제 후 여덟 조건을 통과했다. [21F 실행 보고서](STEP_21F_PROPOSED_POST_GRASP.md)
@@ -64,7 +66,7 @@ uv run --locked python scripts/run_frame_assembly.py --parts 10 --mode single --
 | `runs/readiness/20261101T100023_535826Z_92abc684` | offline_ready, 키·모델 미설정과 비활성 예시 설정을 정확히 표시 |
 | `runs/step21_llm_preview/20261101T100029_099588Z_44ee5da6` | 실제 3초 관측으로 요청 미리보기 생성, API 0·조립 0 |
 
-21G 코드로 다시 검증한 고정 파지용 동결 파일은 `runtime/knowledge/simulation/a9d4c8644ff89ffd7de953834771bb61c6b710b0c6a34e9b6eeb0480bdbfdeef.json`이다. 코드·조건이 바뀌면 다시 검증·동결해야 한다. 이전 묶음을 최신 등록본으로 취급하지 않는다.
+21H 코드로 다시 검증한 고정 파지용 동결 파일은 `runtime/knowledge/simulation/ae7e2c856cd235f1b0ffb87bbed1d81f3455d90b2b204851ad7a70435a46d211.json`이다. 코드·조건이 바뀌면 다시 검증·동결해야 한다. 이전 묶음을 최신 등록본으로 취급하지 않는다.
 
 외부 전체 후보 순서는 `post_1 → sleeve_1 → post_2 → sleeve_2 → post_3 → post_4 → sleeve_4 → sleeve_3 → cover`다. 네 기둥을 먼저 놓는 기존 전체 실행 순서와 다르다. 네이티브 기하 정규화와 MuJoCo 로봇 물리는 구분하며 네이티브 성공을 로봇 조립 성공으로 복사하지 않는다.
 
@@ -78,7 +80,7 @@ uv run --locked python scripts/run_frame_assembly.py --parts 10 --mode single --
 
 ## 다음 작업
 
-1. 첫 기둥의 수치 파지 제안은 [21F 기록](STEP_21F_PROPOSED_POST_GRASP.md)에서 확인한다. 첫 슬리브의 관통 검증은 [21G 기록](STEP_21G_PROPOSED_SLEEVE_GRASP.md)에 있다. 후속은 기둥·슬리브의 연속 실행과 파지 후 오정렬에 대한 실제 모델의 복구 판단이다.
+1. 첫 기둥의 수치 파지 제안은 [21F 기록](STEP_21F_PROPOSED_POST_GRASP.md)에서 확인한다. 첫 슬리브의 관통 검증은 [21G 기록](STEP_21G_PROPOSED_SLEEVE_GRASP.md)에 있다. 파지 후 오정렬에 대한 단일 Luna의 복구 판단은 [21H 기록](STEP_21H_SLEEVE_ALIGNMENT_RECOVERY.md)에 있다. 후속은 같은 장면에서 로봇이 기둥부터 설치하고 그 기둥에 슬리브를 연속 조립하는 작업이다.
 2. 실제 모델 시험을 통과하면 전체 프레임과 실제 다중 LLM 정책으로 확장한다. 지금은 역할별 규칙 객체가 있는 상태다.
 3. 새 외부 10부품 순서의 전체 물리 실행을 검증한다. 현재는 후보 생성·입력 검사와 작은 후보의 실제 로봇 연결까지 완료했다.
 4. 대체 파지·접근·작업 분해·더 다양한 실패를 늘리고 개발 기록과 분리한 평가셋에서 모델·단일/다중·스킬/메모리 효과를 비교한다.

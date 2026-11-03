@@ -34,6 +34,8 @@ def compact_context(context):
     packet['failure'] = ({key: context['failure'].get(key) for key in
                           ('failure_code', 'phase', 'simulation_time_s', 'violations')}
                          if context['failure'] else None)
+    if 'alignment_observation' in context:
+        packet['alignment_observation'] = context['alignment_observation']
     if context.get('grasp_task') is not None:
         packet['grasp_task'] = context['grasp_task']
     packet['failure_history'] = [{key: f.get(key) for key in ('failure_code', 'phase')} for f in context['failures']]

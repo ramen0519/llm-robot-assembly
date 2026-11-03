@@ -1,5 +1,7 @@
 # LLM Robot Assembly
 
+**21H · 슬리브 오정렬 복구.** 원래 장면에서 슬리브를 들고 첫 삽입 목표로 이동한 뒤 측정한 오차를 Luna에 전달한다. 재정렬 또는 중단을 선택하고, 재삽입 후 관통·지지를 확인한다. [실행 기록](docs/STEP_21H_SLEEVE_ALIGNMENT_RECOVERY.md)
+
 **21G · 슬리브 한 개 조립.** Luna가 제출한 파지 위치와 닫힘 방향을 MuJoCo가 검사한다. 원래 장면에서 설치한 후에는 기둥이 슬리브의 양쪽 구멍을 통과하고 바닥판의 지지가 유지되는지 측정한다. [실행 기록과 재현 명령](docs/STEP_21G_PROPOSED_SLEEVE_GRASP.md)
 
 **21F · 첫 기둥의 파지 제안**. 단일 Luna가 기둥 기준 XYZ와 손가락 닫힘 각도를 제출한다. MuJoCo가 복사본에서 삽입 경로까지 검사하고, 승인한 자세로 원래 장면에서 조립한다. 수치 제안, 간섭 피드백과 최종 측정값은 [21F 보고서](docs/STEP_21F_PROPOSED_POST_GRASP.md)에 있다.

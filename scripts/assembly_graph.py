@@ -6,7 +6,7 @@ from langsmith import tracing_context
 
 from assembly_policy import ROLE_INSTRUCTIONS, ScriptedPolicy, allowed_skills, validate_proposal
 from failure_report import FailureCode, FailureEvent, json_safe
-from insertion_recovery import recover_alignment
+from insertion_recovery import alignment_observation, recover_alignment
 from pick_place_graph import _snapshot
 
 
@@ -81,6 +81,8 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
                    'allowed_skills': allowed_skills(state['completed'], state['pending_failure'], state['recoveries'], recovery_budget,
                        transport_replan_available=skills.insert_replan_available() if transport_replan_budget else False,
                        transport_replans=state['transport_replans'], transport_replan_budget=transport_replan_budget)}
+        if 'recover_alignment' in context['allowed_skills']:
+            context['alignment_observation'] = alignment_observation(skills)
         if propose_grasp and 'pick' in context['allowed_skills']:
             from post_grasp import MAX_PROPOSALS
             context['grasp_task'] = {'geometry': skills.grasp_geometry(), 'previous_trials': state['grasp_trials'],
