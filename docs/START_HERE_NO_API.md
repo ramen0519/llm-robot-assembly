@@ -2,6 +2,22 @@
 
 작업 폴더: `C:\dev\llm-robot-assembly`. 실행 데이터는 `runs`, 경험·스킬은 `runtime`에 저장되며 Git에서 제외한다. 실물 로봇은 연결하지 않는다.
 
+## 2026-11-03 이 컴퓨터의 첫 Luna 시험
+
+Windows 앱 제어가 기존 가상환경의 Python 실행을 차단했다(4551). 이 컴퓨터에는 Python Software Foundation의 서명된 Python 3.11.9와 별도 환경 `runtime/luna-venv`를 준비했다. 이 환경은 같은 `uv.lock`의 패키지를 사용한다. 아래쪽 일반 명령에서 `uv run --locked python` 대신 `.\runtime\luna-venv\Scripts\python.exe`를 사용할 수 있다.
+
+로컬 설정은 첫 정상 조립용으로 `gpt-6-luna`, 추론 강도 `low`, 실행당 모델 요청 최대 4회, 프로그램 추정 예산 0.01달러다. [OpenAI 공식 모델 사양과 단가](https://developers.openai.com/api/docs/models/gpt-6-luna)
+
+설치 버전과 3초 물리 안정화 검사는 통과했다. 기록은 `runs/readiness/20261103T061234_202547Z_513af558/readiness.json`에 있다. 진단 셸의 API 호출은 0회였다. 키 유효성과 계정의 모델 사용 권한은 키를 입력한 PowerShell에서 첫 호출로 확인한다.
+
+프로젝트 폴더에서 아래 명령을 한 번 실행한다. 실제 모델이 스킬을 선택하고 시뮬레이션이 기둥 하나를 집어 넣는 시험이다.
+
+```powershell
+.\runtime\luna-venv\Scripts\python.exe scripts/run_assembly_graph.py --mode single --llm-config config/local.llm.toml --snapshots
+```
+
+실행이 끝나면 마지막 줄의 상태와 실행 폴더를 확인한다. 해당 폴더의 `result.json`에 조립 판정과 호출 수가 기록된다.
+
 ## API 없이 확인
 
 ```powershell
