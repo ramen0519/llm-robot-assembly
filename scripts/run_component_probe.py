@@ -18,22 +18,34 @@ from workcell_verification import rotation_error
 
 
 def execute_trial(component='sleeve_1', *, cover_grip='center', snapshots=False,
-                  transport_strategy='direct', transfer_obstacle=False, output_root=None, observer=None):
+                  transport_strategy='direct', transfer_obstacle=False, output_root=None, observer=None, sleeve_llm_config=None):
     if component not in ('sleeve_1', 'sleeve_2', 'sleeve_3', 'sleeve_4', 'cover'):
         raise ValueError('This probe installs one sleeve or the cover.')
     if transport_strategy not in ('direct', 'direct_then_rrt') or type(transfer_obstacle) is not bool:
         raise ValueError('Invalid transport option.')
+    live = sleeve_llm_config is not None
+    if live and (component != 'sleeve_1' or cover_grip != 'center' or transfer_obstacle):
+        raise ValueError('Live sleeve proposals require the base, post_1 and sleeve_1 cell.')
     wall_started = time.monotonic()
     recorder = AssemblyRecorder(output_root or ROOT / 'runs/component_probes', skill='component_probe/v1',
                                 validation_profile='compound_component_on_preassembled_fixture/v1')
     skills, result, initial_installed = None, None, set()
     status, error = 'failed', None
     motion_preflight_failures = []
+    client, ledger, graph_state = None, None, None
     metrics = {'transport_samples': 0, 'maximum_transport_slip_m': 0., 'maximum_transport_tilt_rad': 0.,
                'previous_parts': {}}
     try:
-        model, data, registry = build_frame_scene(10 if component == 'cover' else 5 + int(component[-1]),
-                                                 cover_grip=cover_grip, transfer_obstacle=transfer_obstacle)
+        if live:
+            from llm_runtime import load_llm_config, create_openai_client, ApiLedger
+            from openai_policy import OpenAIAssemblyPolicy
+            config = load_llm_config(sleeve_llm_config).validate(live=True)
+            client = create_openai_client(config)
+            ledger = ApiLedger(config, recorder.run_dir / 'llm_events.jsonl')
+            policy = OpenAIAssemblyPolicy(config, client, ledger)
+        count = 3 if live else (10 if component == 'cover' else 5 + int(component[-1]))
+        model, data, registry = build_frame_scene(count, cover_grip=cover_grip, transfer_obstacle=transfer_obstacle,
+                                                 first_sleeve_cell=live)
         initial_installed = set(registry) - {component}
         # Initial fixture configuration only, before any physical episode begins.
         # These components remain free bodies and are not robot installation successes.
@@ -48,11 +60,14 @@ def execute_trial(component='sleeve_1', *, cover_grip='center', snapshots=False,
             'initial_preassembled_parts': sorted(initial_installed | {'base'}),
             'robot_installations_goal': 1, 'registry': registry, 'simulator_version': mujoco.__version__,
             'transport_strategy': transport_strategy, 'transfer_obstacle': transfer_obstacle,
-            'policy_kind': 'scripted', 'api_calls': 0,
+            'policy_kind': 'openai_responses' if live else 'scripted', **({'api_calls_at_start': 0} if live else {'api_calls': 0}),
+            'llm_config': config.public() if live else None,
             'implementation_sha256': {name: hashlib.sha256((ROOT / 'scripts' / name).read_bytes()).hexdigest()
                 for name in ('frame_assembly_scene.py', 'frame_assembly_skills.py', 'workcell_motion.py',
                              'run_component_probe.py', 'insertion_scene.py', 'insertion_skills.py',
-                             'loaded_transport.py', 'joint_path_planner.py', 'empty_approach.py')}})
+                             'loaded_transport.py', 'joint_path_planner.py', 'empty_approach.py',
+                             'assembly_graph.py', 'assembly_skills.py', 'assembly_policy.py', 'openai_policy.py',
+                             'post_grasp.py', 'llm_runtime.py')}})
         with recorder.trace_path.open('w', newline='', encoding='utf-8') as stream:
             writer = csv.DictWriter(stream, fieldnames=INSERTION_TRACE_FIELDS)
             writer.writeheader()
@@ -74,6 +89,8 @@ def execute_trial(component='sleeve_1', *, cover_grip='center', snapshots=False,
             def stage(name):
                 stream.flush()
                 print(f'[{data.time:8.3f} s] {component}: {name}', flush=True)
+                if live and snapshots and name in ('pick_lift', 'insert_alignment_check', 'insert_release'):
+                    save_snapshot(model, data, skills.config, recorder.run_dir / (name + '.png'))
             def transport_failure(exc):
                 recorder.fail(exc, skills, 23)
                 report = json.loads((recorder.run_dir / 'failure_report.json').read_text(encoding='utf-8'))
@@ -85,13 +102,32 @@ def execute_trial(component='sleeve_1', *, cover_grip='center', snapshots=False,
                                  transport_strategy=transport_strategy, on_transport_preflight_failure=transport_failure)
             if observer:
                 observer(skills)  # Test hook after fixture initialization; not a policy action.
-            skills.settle()
-            skills.pick(component)
-            result = skills.insert(component, registry[component]['config']['target']['id'])
-            status = 'success'
+            if live:
+                from assembly_graph import run_assembly_graph
+                def failure(exc):
+                    recorder.fail(exc, skills, 23)
+                    return json.loads((recorder.run_dir / 'failure_report.json').read_text(encoding='utf-8'))
+                with (recorder.run_dir / 'graph_events.jsonl').open('w', encoding='utf-8') as journal:
+                    def event(row):
+                        journal.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + '\n')
+                        journal.flush()
+                    graph_state = run_assembly_graph(skills, mode='single', policies={'single': policy},
+                        task_id='first_sleeve_on_installed_post/v1', insert_result_skill='insert_sleeve/v1',
+                        propose_grasp=True, on_event=event, failure_handler=failure)
+                status, error = graph_state['status'], graph_state['error']
+                if status == 'success':
+                    result = skills.results[-1]
+            else:
+                skills.settle()
+                skills.pick(component)
+                result = skills.insert(component, registry[component]['config']['target']['id'])
+                status = 'success'
     except (Exception, KeyboardInterrupt) as exc:
         status = recorder.fail(exc, skills, 23)
         error = str(exc)
+    finally:
+        if client is not None:
+            client.close()
     if skills and snapshots:
         save_snapshot(skills.model, skills.data, skills.config, recorder.run_dir / 'final.png')
     report = {'status': status, 'error': error, 'run_dir': str(recorder.run_dir), 'component': component,
@@ -103,7 +139,10 @@ def execute_trial(component='sleeve_1', *, cover_grip='center', snapshots=False,
               'transport_attempts': skills.transport_attempts if skills else [],
               'empty_approach_attempts': skills.empty_approach_attempts if skills else [],
               'motion_preflight_failures': motion_preflight_failures, 'part_metrics': metrics,
-              'policy_kind': 'scripted', 'api_calls': 0, 'wall_elapsed_s': time.monotonic() - wall_started}
+              'graph_state': graph_state, 'skill_results': skills.results if skills else [],
+              'policy_kind': 'openai_responses' if live else 'scripted',
+              'llm_usage': ledger.summary() if ledger else None, 'api_calls': ledger.model_requests if ledger else 0,
+              'wall_elapsed_s': time.monotonic() - wall_started}
     write_json(recorder.run_dir / 'result.json', report)
     print(f'{status}: {recorder.run_dir}', flush=True)
     if error:
@@ -115,10 +154,11 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--component', choices=['sleeve_1', 'sleeve_2', 'sleeve_3', 'sleeve_4', 'cover'], default='sleeve_1')
     parser.add_argument('--cover-grip', choices=['center', 'edge'], default='center')
+    parser.add_argument('--sleeve-llm-config', type=Path, help='Live single-policy numeric grasp on a preassembled free post_1')
     parser.add_argument('--snapshots', action='store_true')
     parser.add_argument('--transport-strategy', choices=['direct', 'direct_then_rrt'], default='direct')
     parser.add_argument('--transfer-obstacle', action='store_true', help='Fixed test fixture, present from the start')
     args = parser.parse_args()
     result = execute_trial(args.component, cover_grip=args.cover_grip, snapshots=args.snapshots,
-                           transport_strategy=args.transport_strategy, transfer_obstacle=args.transfer_obstacle)
+                           transport_strategy=args.transport_strategy, transfer_obstacle=args.transfer_obstacle, sleeve_llm_config=args.sleeve_llm_config)
     raise SystemExit(0 if result['status'] == 'success' else 1)

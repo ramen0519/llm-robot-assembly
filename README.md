@@ -1,12 +1,14 @@
 # LLM Robot Assembly
 
+**21G · 슬리브 한 개 조립.** Luna가 제출한 파지 위치와 닫힘 방향을 MuJoCo가 검사한다. 원래 장면에서 설치한 후에는 기둥이 슬리브의 양쪽 구멍을 통과하고 바닥판의 지지가 유지되는지 측정한다. [실행 기록과 재현 명령](docs/STEP_21G_PROPOSED_SLEEVE_GRASP.md)
+
 **21F · 첫 기둥의 파지 제안**. 단일 Luna가 기둥 기준 XYZ와 손가락 닫힘 각도를 제출한다. MuJoCo가 복사본에서 삽입 경로까지 검사하고, 승인한 자세로 원래 장면에서 조립한다. 수치 제안, 간섭 피드백과 최종 측정값은 [21F 보고서](docs/STEP_21F_PROPOSED_POST_GRASP.md)에 있다.
 
 **2026-11-03** · Luna가 실제 API로 집기·삽입·완료를 선택해 첫 기둥을 설치했다. 성공 실행은 모델 요청 3회, 최종 위치 오차 최대 0.127mm다. [21E 실행 보고서](docs/STEP_21E_FIRST_LIVE_LUNA.md)
 
 최신 통합 검증: [23I 전체 정책 재계획](docs/STEP_23I_FULL_POLICY_REPLAN.md)에서 **로봇 설치 9/9, 운반 재계획 6회, 정렬 복구 1회**를 확인했다. 바닥판 1개를 포함한 10부품 프레임이다. 이 10부품 실행은 규칙 정책으로 API 호출 0회였다.
 
-API 키 없이 가능한 준비 결과와 집에서 키를 설정한 뒤 실행할 명령은 **[집에서 이어서 실행하기](docs/START_HERE_NO_API.md)**에 정리했다. 현재 live 연결은 첫 결합의 단일 정책 범위다.
+API 키 없이 가능한 준비 결과와 집에서 키를 설정한 뒤 실행할 명령은 **[집에서 이어서 실행하기](docs/START_HERE_NO_API.md)**에 정리했다. 현재 단일 Luna는 첫 기둥과 첫 슬리브의 독립 시뮬레이션에서 사용한다.
 
 [16D 외부 ASAP 전체 후보](docs/STEP_16D_CONSTRAINED_NATIVE_PLAN.md)는 명시한 로봇 선행조건 아래 10부품 분해 9단계를 생성했다. [16E 외부 후보→로봇](docs/STEP_16E_PLANNER_TO_ROBOT.md)은 작은 후보의 두 기둥 설치 2/2를 확인했다. 새 외부 10부품 순서의 전체 로봇 실행은 별도로 남아 있다. [25C 변경 조건](docs/STEP_25C_CHANGED_CONDITIONS.md)은 기대 동작 8/8·조립 성공 6/8, [22D 지식 동결](docs/STEP_22D_FROZEN_KNOWLEDGE.md)은 경험·검증 절차의 전달과 첫 결합 복구를 확인했다.
 

@@ -11,7 +11,7 @@ from workcell_scene import build_workcell_spec, compile_workcell, part_name, tab
 PART_SPAWNS = [*SPAWNS, (-.28, .05), (.26, -.20), (.13, -.25), (.04, -.25), (.27, .17)]
 
 
-def build_frame_scene(product_count=6, *, cover_grip='center', transfer_obstacle=False):
+def build_frame_scene(product_count=6, *, cover_grip='center', transfer_obstacle=False, first_sleeve_cell=False):
     if type(transfer_obstacle) is not bool:
         raise ValueError('The transfer-obstacle option must be boolean.')
     # Scene construction also supports isolated compound-component probes.
@@ -20,6 +20,8 @@ def build_frame_scene(product_count=6, *, cover_grip='center', transfer_obstacle
         raise ValueError('Unknown cover grip variant')
     if type(product_count) is not int or not 2 <= product_count <= 10:
         raise ValueError('Product count must include base plus one to nine free components.')
+    if first_sleeve_cell and product_count != 3:
+        raise ValueError('The first sleeve cell contains the base, post_1 and sleeve_1.')
     d = MULTI_DIMENSIONS
     config = insertion_config(d)
     spec = build_workcell_spec(config)
@@ -35,7 +37,11 @@ def build_frame_scene(product_count=6, *, cover_grip='center', transfer_obstacle
     # This fixture blocks transport while leaving the second socket's descent clear.
     obstacle = add_transfer_test_obstacle(spec, config, center_table_m=[.040, -.150, .115]) if transfer_obstacle else None
     registry = {}
-    for i, part in enumerate(product[1:product_count]):
+    components = enumerate(product[1:product_count])
+    if first_sleeve_cell:
+        # Keep CAD indices and tray positions from the full frame.
+        components = [(i, part) for i, part in enumerate(product[1:]) if part['id'] in ('post_1', 'sleeve_1')]
+    for i, part in components:
         kind = part['kind']
         boxes = deepcopy(part['boxes'])
         low = np.min([np.array(b['center']) - np.array(b['size']) / 2 for b in boxes], axis=0)

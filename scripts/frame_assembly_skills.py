@@ -1,5 +1,6 @@
 """Compound-part support/grasp checks and measured insertion skills for the frame."""
 import math
+from copy import copy
 import mujoco
 import numpy as np
 from assembly_skills import DOWNWARD_TCP, HOVER_M
@@ -52,8 +53,11 @@ class FrameVerifier(InsertionVerifier):
                     or (part in self.installed and self.mating_relation(part, other)))
                     for part, other in ((pa, b), (pb, a)))
             if not allowed:
+                names = [self.model.geom(g).name or self.model.body(self.model.geom_bodyid[g]).name for g in (a, b)]
                 raise FailureEvent(FailureCode.PLANNED_CONTACT if planned else FailureCode.UNEXPECTED_CONTACT,
-                                   f'Forbidden compound-part contact: {self.model.geom(a).name or self.model.body(self.model.geom_bodyid[a]).name}, {self.model.geom(b).name or self.model.body(self.model.geom_bodyid[b]).name}')
+                                   f'Forbidden compound-part contact: {", ".join(names)}',
+                                   violations=[{'geoms': names, 'position_world_m': c.pos.tolist(),
+                                                'signed_distance_m': float(c.dist)}])
             penetration = max(penetration, -float(c.dist))
             if penetration > .003:
                 raise FailureEvent(FailureCode.PLANNED_CONTACT if planned else FailureCode.UNEXPECTED_CONTACT,
@@ -156,6 +160,32 @@ class FrameSkills(InsertionSkills):
                                     for name, e in self.registry.items()}
         return observation
 
+    def _grasp_trial_copy(self):
+        return FrameSkills(self.model, copy(self.data), self.active, self.registry, set(self.installed),
+                           transport_strategy=self.transport_strategy, empty_approach_strategy=self.empty_approach_strategy)
+
+    def grasp_geometry(self):
+        if self.registry[self.active]['kind'] != 'sleeve':
+            raise ValueError('Numeric frame grasp proposals currently support sleeves.')
+        packet = super().grasp_geometry()
+        packet.pop('socket_insertion_depth_mm')
+        dims = self.verifier.joint['dimensions_m']
+        post = next(name for name in self.registry[self.active]['requires'] if name != 'base')
+        packet.update(shape='upright square sleeve with a centered through-hole',
+                      frame='origin at geometric center of sleeve; axes follow the sleeve; +z is up',
+                      bore_width_mm=1000*dims['hole_width'], mating_post_id=post,
+                      mating_post_width_mm=1000*dims['post_width'],
+                      nominal_exposed_post_height_mm=1000*self.verifier.joint['nominal_insertion_depth_m'],
+                      seating_surface='top surface of fixed base; post passes through the sleeve bore',
+                      tcp_note='TCP is the midpoint between jaws and can lie in the empty bore. Pads contact solid walls.')
+        return packet
+
+    def held_pad_geometry(self):
+        from post_grasp import lowest_pad_above_part_bottom
+        lowest = round(float(lowest_pad_above_part_bottom(self) * 1000), 2)
+        return {'lowest_pad_above_sleeve_bottom_mm': lowest,
+                'predicted_lowest_pad_height_relative_to_seated_base_top_mm': lowest}
+
     def _move_to_hover(self, position, rotation):
         if self.empty_approach_strategy == 'direct':
             return self.motion.move(position, rotation)
@@ -177,7 +207,7 @@ class FrameSkills(InsertionSkills):
         finally:
             attempt['end_time_s'] = float(self.data.time)
 
-    def approach(self, part_id):
+    def approach(self, part_id, *, grasp=None):
         if part_id != self.active or self.motion.held_pose is not None or part_id in self.installed:
             raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, 'Need a known uninstalled free component and empty gripper.')
         entry = self.registry[part_id]
@@ -189,21 +219,72 @@ class FrameSkills(InsertionSkills):
         if (np.dot(rotation[:, 2], [0, 0, 1]) < math.cos(math.radians(1))
                 or not row['supported'] or row['part_speed_m_s'] > .001 or row['pad_gap_mm'] < 80):
             raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, 'Need a settled upright component and open gripper.')
-        offset = np.asarray(entry['grasp_offset_part_m'])
-        grasp = body.xpos.copy() + rotation @ offset
-        orientation = rotation @ DOWNWARD_TCP
+        center = body.xpos.copy()
+        if grasp is None:
+            target = center + rotation @ np.asarray(entry['grasp_offset_part_m'])
+            orientation = rotation @ DOWNWARD_TCP
+        else:
+            from post_grasp import bounds_issue, world_grasp
+            issue = bounds_issue(grasp, self.config['part']['size_m'])
+            if issue or entry['kind'] != 'sleeve':
+                raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, issue or 'Expected a sleeve grasp.')
+            target, orientation = world_grasp(center, rotation, grasp, DOWNWARD_TCP)
         self.stage('approach_hover')
-        self._move_to_hover(grasp + [0., 0., HOVER_M], orientation)
+        self._move_to_hover(target + [0., 0., HOVER_M], orientation)
         body = self.data.body(self.verifier.part_body)
-        if (np.linalg.norm(body.xpos + body.xmat.reshape(3, 3) @ offset - grasp) > .001
+        if (np.linalg.norm(body.xpos - center) > .001
                 or rotation_error(body.xmat.reshape(3, 3), rotation) > math.radians(1)):
             raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, 'Component moved during approach.')
         self.stage('approach_lower')
-        rows = self.motion.move(grasp, orientation)
+        rows = self.motion.move(target, orientation)
         result = {'skill': 'approach_component/v1', 'status': 'success', 'part_id': part_id,
                   'final_tcp_error_m': rows[-1]['tcp_position_error_m'], 'observation': self.observe()}
+        if grasp is not None:
+            result.update(proposed_grasp=dict(grasp), commanded_tcp_world_m=target.tolist(),
+                          commanded_tcp_rotation_world=orientation.tolist())
         self.results.append(result)
         return result
+
+    def verify_sleeve_fit(self):
+        """Check the four actual post edges at both openings in the sleeve's own frame."""
+        entry = self.registry[self.active]
+        post_id = next(name for name in entry['requires'] if name != 'base')
+        if post_id not in self.installed:
+            raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, 'Mating post is not installed.')
+        post = self.data.body(part_name(self.registry[post_id]['config']))
+        sleeve = self.data.body(self.verifier.part_body)
+        sleeve_axes = sleeve.xmat.reshape(3, 3)
+        post_center = sleeve_axes.T @ (post.xpos - sleeve.xpos)
+        post_axes = sleeve_axes.T @ post.xmat.reshape(3, 3)
+        half = np.asarray(self.registry[post_id]['config']['part']['size_m']) / 2
+        sleeve_height = self.config['part']['size_m'][2]
+        hole_half = entry['joint']['dimensions_m']['hole_width'] / 2
+        if post_axes[2, 2] <= 0.99:
+            raise FailureEvent(FailureCode.PLACEMENT_NOT_CONFIRMED, 'Post is not aligned with the sleeve bore.')
+        clearance = hole_half
+        end_margin = half[2]
+        for x in (-half[0], half[0]):
+            for y in (-half[1], half[1]):
+                edge_center = post_center + post_axes[:, 0] * x + post_axes[:, 1] * y
+                for z in (-sleeve_height / 2, sleeve_height / 2):
+                    distance = (z - edge_center[2]) / post_axes[2, 2]
+                    xy = edge_center[:2] + post_axes[:2, 2] * distance
+                    clearance = min(clearance, hole_half - np.max(np.abs(xy)))
+                    end_margin = min(end_margin, half[2] - abs(distance))
+        fit = {'post_id': post_id, 'sleeve_height_mm': 1000*sleeve_height,
+               'minimum_bore_side_clearance_mm': 1000*float(clearance),
+               'minimum_post_extension_past_openings_mm': 1000*float(end_margin)}
+        if clearance < 0 or end_margin < 0:
+            raise FailureEvent(FailureCode.PLACEMENT_NOT_CONFIRMED, 'Post does not pass through both openings.',
+                               violations=[fit])
+        return fit
+
+    def insertion_evidence(self, rows):
+        evidence = super().insertion_evidence(rows)
+        if self.registry[self.active]['kind'] == 'sleeve':
+            evidence['sleeve_fit'] = self.verify_sleeve_fit()
+            evidence['checks']['post_through_both_sleeve_openings'] = True
+        return evidence
 
     def insert(self, part_id, target_id, **kwargs):
         result = super().insert(part_id, target_id, **kwargs)

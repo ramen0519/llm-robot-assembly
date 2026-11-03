@@ -57,10 +57,16 @@ def build_request(config, context):
     if 'grasp_task' in packet:
         from post_grasp import GRASP_SCHEMA
         properties['grasp'] = {'anyOf': [GRASP_SCHEMA, {'type': 'null'}]}
+        clearance_goal = ('Keep the pads clear of the base and installed post as the post passes through the bore.'
+                          if context.get('insert_result_skill') == 'insert_sleeve/v1' else
+                          'The fingers must clear the socket rim throughout seating.')
         grasp_instruction = (' Decide your own numeric grasp for pick using the measured geometry, finger clearance, '
-                             'approach and insertion. The fingers must clear the socket rim throughout seating. On a rejected trial '
+                             f'approach and insertion. {clearance_goal} On a rejected trial '
                              'use its measured contact and held pad geometry to decide which parameters to revise, '
                              'or stop. For stop use null. No preselected pose or choice list is provided.')
+        if packet['grasp_task']['previous_trials']:
+            grasp_instruction += (' The scene has been re-observed. For a rejected grasp, change at least one '
+                                  'geometrically relevant parameter based on the contact evidence, or stop.')
     request = {'model': config.model,
                'instructions': POLICY_INSTRUCTIONS + '\n' + ROLE_INSTRUCTIONS['single'] + grasp_instruction,
                'input': json.dumps(packet, ensure_ascii=False, allow_nan=False, separators=(',', ':')),

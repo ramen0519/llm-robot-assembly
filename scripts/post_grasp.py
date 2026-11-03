@@ -41,14 +41,18 @@ def grasp_geometry(skills):
             'socket_insertion_depth_mm': skills.verifier.joint['nominal_insertion_depth_m'] * 1000}
 
 
-def pad_clearance_at_seating(skills):
-    """Project held pad boxes on the post axis; compare against the socket rim at target depth."""
+def lowest_pad_above_part_bottom(skills):
+    """Project both fingers on the held part's local Z axis, in metres."""
     body = skills.data.body(skills.verifier.part_body)
     axis = body.xmat.reshape(3, 3)[:, 2]
     half_height = skills.config['part']['size_m'][2] / 2
-    lowest = min((skills.data.geom(i).xpos - body.xpos) @ axis + half_height
-                 - np.abs(skills.data.geom(i).xmat.reshape(3, 3).T @ axis) @ skills.model.geom_size[i]
-                 for i in skills.verifier.pads)
+    return min((skills.data.geom(i).xpos - body.xpos) @ axis + half_height
+               - np.abs(skills.data.geom(i).xmat.reshape(3, 3).T @ axis) @ skills.model.geom_size[i]
+               for i in skills.verifier.pads)
+
+
+def pad_clearance_at_seating(skills):
+    lowest = lowest_pad_above_part_bottom(skills)
     depth = skills.verifier.joint['nominal_insertion_depth_m']
     return {'lowest_pad_above_post_bottom_mm': round(float(lowest * 1000), 2),
             'socket_rim_above_seated_post_bottom_mm': round(depth * 1000, 2),

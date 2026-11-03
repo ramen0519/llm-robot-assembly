@@ -111,22 +111,33 @@ class InsertionSkills(AssemblySkills):
                                          for k, v in self.verifier.joint.items()}
         return observation
 
-    def check_post_grasp(self, grasp):
+    def grasp_geometry(self):
+        from post_grasp import grasp_geometry
+        return grasp_geometry(self)
+
+    def _grasp_trial_copy(self):
+        return InsertionSkills(self.model, copy(self.data), self.config, self.verifier.joint,
+                               transport_strategy=self.transport_strategy)
+
+    def held_pad_geometry(self):
+        from post_grasp import pad_clearance_at_seating
+        return pad_clearance_at_seating(self)
+
+    def check_grasp(self, grasp):
         """Try the proposed grasp and nominal insertion on an independent copy before live motion."""
-        from post_grasp import bounds_issue, pad_clearance_at_seating
+        from post_grasp import bounds_issue
         outcome = {'grasp': dict(grasp), 'source': 'mujoco_preflight_copy',
                    'live_start_s': float(self.data.time), 'accepted': False}
         issue = bounds_issue(grasp, self.config['part']['size_m'])
         if issue:
             return {**outcome, 'phase': 'grasp_bounds', 'failure_code': 'INPUT_OR_PRECONDITION_INVALID',
                     'message': issue}
-        trial = InsertionSkills(self.model, copy(self.data), self.config, self.verifier.joint,
-                                transport_strategy=self.transport_strategy)
+        trial = self._grasp_trial_copy()
         trial.motion.reference = self.motion.reference.copy()
         trial.motion.gripper_command = self.motion.gripper_command
         try:
             trial.pick(self.config['part']['id'], grasp=grasp)
-            outcome['held_pad_geometry'] = pad_clearance_at_seating(trial)
+            outcome['held_pad_geometry'] = trial.held_pad_geometry()
             result = trial.insert(self.config['part']['id'], self.config['target']['id'])
         except FailureEvent as error:
             if error.code in (FailureCode.MODEL_OR_CONTROL_INVALID, FailureCode.SIMULATION_INVALID):
@@ -135,7 +146,10 @@ class InsertionSkills(AssemblySkills):
                     'message': str(error), 'violations': json_safe(error.violations),
                     'copy_end_s': float(trial.data.time)}
         return {**outcome, 'accepted': True, 'copy_end_s': float(trial.data.time),
-                'checks': result['checks'], 'minimum_final_depth_m': result['minimum_final_depth_m']}
+                'checks': result['checks'], 'minimum_final_depth_m': result['minimum_final_depth_m'],
+                **({'sleeve_fit': result['sleeve_fit']} if 'sleeve_fit' in result else {})}
+
+    check_post_grasp = check_grasp  # Existing first-post callers.
 
     def insert_replan_available(self, error=None):
         return self._rejected_insert is not None and self._rejected_insert.available(self, error)
@@ -208,6 +222,9 @@ class InsertionSkills(AssemblySkills):
         finally:
             attempt['end_time_s'] = float(self.data.time)
 
+    def insertion_evidence(self, rows):
+        return {'checks': self.verifier.verify_insertion(rows)}
+
     def insert(self, part_id, target_id, *, alignment_offset_m=None, transport_strategy=None):
         self._rejected_insert = None
         if transport_strategy is not None and transport_strategy not in ('direct', 'direct_then_rrt'):
@@ -240,9 +257,9 @@ class InsertionSkills(AssemblySkills):
         self.motion.move(p + [0, 0, HOVER_M], r, allow_support=True, allow_grasp=False)
         self.stage('insert_verify')
         rows = self.motion.hold(1., allow_support=True, allow_grasp=False)
-        checks = self.verifier.verify_insertion(rows)
+        evidence = self.insertion_evidence(rows)
         result = {'skill': 'insert_post/v1', 'status': 'success', 'part_id': part_id, 'target_id': target_id,
-                  'checks': checks, 'minimum_final_depth_m': min(r['insertion_depth_m'] for r in rows),
+                  **evidence, 'minimum_final_depth_m': min(r['insertion_depth_m'] for r in rows),
                   'maximum_final_position_error_m': max(r['target_position_error_m'] for r in rows),
                   'observation': self.observe()}
         self.results.append(result)

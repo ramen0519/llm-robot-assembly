@@ -82,8 +82,8 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
                        transport_replan_available=skills.insert_replan_available() if transport_replan_budget else False,
                        transport_replans=state['transport_replans'], transport_replan_budget=transport_replan_budget)}
         if propose_grasp and 'pick' in context['allowed_skills']:
-            from post_grasp import MAX_PROPOSALS, grasp_geometry
-            context['grasp_task'] = {'geometry': grasp_geometry(skills), 'previous_trials': state['grasp_trials'],
+            from post_grasp import MAX_PROPOSALS
+            context['grasp_task'] = {'geometry': skills.grasp_geometry(), 'previous_trials': state['grasp_trials'],
                                      'attempts_remaining': MAX_PROPOSALS - len(state['grasp_trials'])}
         proposal = validate_proposal(policies[role].propose(deepcopy(context)), context)
         return {'action': proposal, 'policy_calls': state['policy_calls'] + 1,
@@ -94,7 +94,7 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
         action = state['action']
         if state['observation'] != _snapshot(skills) or action['observation_revision'] != state['observation_revision']:
             raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, 'Observation changed before grasp preflight.')
-        trial = skills.check_post_grasp(action['grasp'])
+        trial = skills.check_grasp(action['grasp'])
         trial['observation_revision'] = state['observation_revision']
         trials = [*state['grasp_trials'], trial]
         if not trial['accepted'] and len(trials) >= MAX_PROPOSALS:
@@ -131,10 +131,10 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
         elif name == 'finish':
             # Fresh current-state verification also required at terminal success.
             row = skills.verifier.sample(skills.data, skills.motion.reference, allow_support=True, allow_grasp=False)
-            checks = skills.verifier.verify_insertion([row])
+            evidence = skills.insertion_evidence([row])
             if state['completed'] != ['pick', 'insert']:
                 raise ValueError('Finish requires both verified actions.')
-            return {'status': 'success', 'error': None, 'verification': {'checks': checks, 'measurements': row}}
+            return {'status': 'success', 'error': None, 'verification': {**evidence, 'measurements': row}}
         else:
             raise ValueError('Unsupported executable action.')
         return {'last_result': json_safe(result)}
@@ -151,9 +151,10 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
                 raise FailureEvent(FailureCode.GRASP_NOT_CONFIRMED, 'Expected a physically held/lifted part.')
             skills.verifier.check_held(skills.data, row, skills.motion.held_pose)
             checks = skills.verifier.verify_alignment(skills.data) if name == 'recover_alignment' else {'held_and_lifted': True}
+            evidence = {'checks': checks}
         else:
-            checks = skills.verifier.verify_insertion([row])
-        update = {'verification': {'source': 'sim_ground_truth', 'checks': checks, 'measurements': json_safe(row)}}
+            evidence = skills.insertion_evidence([row])
+        update = {'verification': {'source': 'sim_ground_truth', **evidence, 'measurements': json_safe(row)}}
         if name == 'recover_alignment':
             update.update(pending_failure=None, recoveries=state['recoveries'] + 1, error=None)
         else:
