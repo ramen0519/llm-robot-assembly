@@ -19,15 +19,19 @@ from workcell_verification import rotation_error
 
 def execute_trial(component='sleeve_1', *, cover_grip='center', snapshots=False,
                   transport_strategy='direct', transfer_obstacle=False, output_root=None, observer=None, sleeve_llm_config=None,
-                  scenario='nominal'):
+                  scenario='nominal', cover_llm_config=None):
     if component not in ('sleeve_1', 'sleeve_2', 'sleeve_3', 'sleeve_4', 'cover'):
         raise ValueError('This probe installs one sleeve or the cover.')
     if transport_strategy not in ('direct', 'direct_then_rrt') or type(transfer_obstacle) is not bool:
         raise ValueError('Invalid transport option.')
-    live = sleeve_llm_config is not None
-    if scenario not in ('nominal', 'alignment_offset') or (scenario == 'alignment_offset' and not live):
+    live_cover = cover_llm_config is not None
+    live_sleeve = sleeve_llm_config is not None
+    live = live_cover or live_sleeve
+    if live_cover and (component != 'cover' or live_sleeve):
+        raise ValueError('Use the cover configuration only for a cover probe, with one policy.')
+    if scenario not in ('nominal', 'alignment_offset') or (scenario == 'alignment_offset' and not live_sleeve):
         raise ValueError('The alignment-offset probe requires the live first-sleeve graph.')
-    if live and (component != 'sleeve_1' or cover_grip != 'center' or transfer_obstacle):
+    if live_sleeve and (component != 'sleeve_1' or cover_grip != 'center' or transfer_obstacle):
         raise ValueError('Live sleeve proposals require the base, post_1 and sleeve_1 cell.')
     wall_started = time.monotonic()
     recorder = AssemblyRecorder(output_root or ROOT / 'runs/component_probes', skill='component_probe/v1',
@@ -42,13 +46,13 @@ def execute_trial(component='sleeve_1', *, cover_grip='center', snapshots=False,
         if live:
             from llm_runtime import load_llm_config, create_openai_client, ApiLedger
             from openai_policy import OpenAIAssemblyPolicy
-            config = load_llm_config(sleeve_llm_config).validate(live=True)
+            config = load_llm_config(cover_llm_config if live_cover else sleeve_llm_config).validate(live=True)
             client = create_openai_client(config)
             ledger = ApiLedger(config, recorder.run_dir / 'llm_events.jsonl')
             policy = OpenAIAssemblyPolicy(config, client, ledger)
-        count = 3 if live else (10 if component == 'cover' else 5 + int(component[-1]))
+        count = 3 if live_sleeve else (10 if component == 'cover' else 5 + int(component[-1]))
         model, data, registry = build_frame_scene(count, cover_grip=cover_grip, transfer_obstacle=transfer_obstacle,
-                                                 first_sleeve_cell=live)
+                                                 first_sleeve_cell=live_sleeve)
         initial_installed = set(registry) - {component}
         # Initial fixture configuration only, before any physical episode begins.
         # These components remain free bodies and are not robot installation successes.
@@ -61,7 +65,8 @@ def execute_trial(component='sleeve_1', *, cover_grip='center', snapshots=False,
         write_json(recorder.run_dir / 'resolved_config.json', {
             'environment': 'simulation', 'component': component, 'cover_grip': cover_grip, 'scenario': scenario,
             'initial_preassembled_parts': sorted(initial_installed | {'base'}),
-            'robot_installations_goal': 1, 'registry': registry, 'simulator_version': mujoco.__version__,
+            'robot_installations_goal': 1, 'registry': registry,
+            'grasp_source': 'model_numeric_proposal' if live else 'fixed_component_offset', 'simulator_version': mujoco.__version__,
             'transport_strategy': transport_strategy, 'transfer_obstacle': transfer_obstacle,
             'policy_kind': 'openai_responses' if live else 'scripted', **({'api_calls_at_start': 0} if live else {'api_calls': 0}),
             'llm_config': config.public() if live else None,
@@ -70,7 +75,7 @@ def execute_trial(component='sleeve_1', *, cover_grip='center', snapshots=False,
                              'run_component_probe.py', 'insertion_scene.py', 'insertion_skills.py',
                              'loaded_transport.py', 'joint_path_planner.py', 'empty_approach.py',
                              'assembly_graph.py', 'assembly_skills.py', 'assembly_policy.py', 'openai_policy.py',
-                             'post_grasp.py', 'llm_runtime.py', 'insertion_recovery.py')}})
+                             'post_grasp.py', 'llm_runtime.py', 'insertion_recovery.py', 'frame_product.py')}})
         with recorder.trace_path.open('w', newline='', encoding='utf-8') as stream:
             writer = csv.DictWriter(stream, fieldnames=INSERTION_TRACE_FIELDS)
             writer.writeheader()
@@ -103,6 +108,8 @@ def execute_trial(component='sleeve_1', *, cover_grip='center', snapshots=False,
                 write_json(recorder.run_dir / 'failure_report.json', report)
             skills = FrameSkills(model, data, component, registry, initial_installed, sample, stage,
                                  transport_strategy=transport_strategy, on_transport_preflight_failure=transport_failure)
+            if live_cover and snapshots:
+                save_snapshot(model, data, skills.config, recorder.run_dir / 'before.png')
             if observer:
                 observer(skills)  # Test hook after fixture initialization; not a policy action.
             if live:
@@ -117,7 +124,8 @@ def execute_trial(component='sleeve_1', *, cover_grip='center', snapshots=False,
                         journal.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + '\n')
                         journal.flush()
                     graph_state = run_assembly_graph(skills, mode='single', policies={'single': policy},
-                        task_id='first_sleeve_on_installed_post/v1', insert_result_skill='insert_sleeve/v1',
+                        task_id='cover_on_four_posts/v1' if live_cover else 'first_sleeve_on_installed_post/v1',
+                        insert_result_skill='seat_cover/v1' if live_cover else 'insert_sleeve/v1',
                         propose_grasp=True, scenario=scenario, on_event=event, failure_handler=failure)
                 status, error = graph_state['status'], graph_state['error']
                 if status == 'success':
@@ -159,6 +167,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--component', choices=['sleeve_1', 'sleeve_2', 'sleeve_3', 'sleeve_4', 'cover'], default='sleeve_1')
     parser.add_argument('--cover-grip', choices=['center', 'edge'], default='center')
+    parser.add_argument('--cover-llm-config', type=Path, help='Live numeric cover grasp on four preassembled posts and sleeves')
     parser.add_argument('--sleeve-llm-config', type=Path, help='Live single-policy numeric grasp on a preassembled free post_1')
     parser.add_argument('--scenario', choices=['nominal', 'alignment_offset'], default='nominal',
                         help='Offset only the first live insert approach by +6 mm in world X; never perturb the grasp trial.')
@@ -168,5 +177,5 @@ if __name__ == '__main__':
     args = parser.parse_args()
     result = execute_trial(args.component, cover_grip=args.cover_grip, snapshots=args.snapshots,
                            transport_strategy=args.transport_strategy, transfer_obstacle=args.transfer_obstacle, sleeve_llm_config=args.sleeve_llm_config,
-                           scenario=args.scenario)
+                           scenario=args.scenario, cover_llm_config=args.cover_llm_config)
     raise SystemExit(0 if result['status'] == 'success' else 1)

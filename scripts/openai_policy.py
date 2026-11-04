@@ -62,6 +62,13 @@ def build_request(config, context):
         clearance_goal = ('Keep the pads clear of the base and installed post as the post passes through the bore.'
                           if context.get('insert_result_skill') == 'insert_sleeve/v1' else
                           'The fingers must clear the socket rim throughout seating.')
+        if context.get('insert_result_skill') == 'seat_cover/v1':
+            clearance_goal = ('Account for the entire plate width versus the jaw opening, the height of the pads '
+                              'above the solid plate during closure, and clearance from the four posts while seating. '
+                              'If an approach intersects the sheet, use the signed pad-to-sheet clearance and the '
+                              'raised feature geometry. Check the measured unloaded closing profile at the intended face width: '
+                              'a grip on a raised feature must overlap its vertical faces '
+                              'while keeping the pads above the sheet throughout approach and closure.')
         grasp_instruction = (' Decide your own numeric grasp for pick using the measured geometry, finger clearance, '
                              f'approach and insertion. {clearance_goal} On a rejected trial '
                              'use its measured contact and held pad geometry to decide which parameters to revise, '

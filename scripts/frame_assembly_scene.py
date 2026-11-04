@@ -2,7 +2,7 @@
 from copy import deepcopy
 import mujoco
 import numpy as np
-from frame_product import product_parts
+from frame_product import frame_hole_centers, product_parts
 from insertion_scene import BASE_NAME, BASE_XY_TABLE, insertion_config, add_transfer_test_obstacle
 from multi_post_scene import MULTI_DIMENSIONS, SPAWNS
 from workcell_scene import build_workcell_spec, compile_workcell, part_name, table_to_world, yaw_quat_wxyz, yaw_rotation, validate_config
@@ -102,5 +102,10 @@ def build_frame_scene(product_count=6, *, cover_grip='center', transfer_obstacle
                               'support_ids': support_ids, 'mating_ids': mating_ids,
                               'grasp_offset_part_m': grasp.tolist(),
                               'spawn_center_world_m': table_to_world(c, [*PART_SPAWNS[i], size[2] / 2])}
+        if kind == 'cover':
+            # The same CAD layout carves the four holes. Express them in the moving body frame.
+            registry['cover']['bore_centers_part_m'] = {
+                f'post_{k}': (np.array([x, y, d.cover_height / 2]) - origin).tolist()
+                for k, (x, y) in enumerate(frame_hole_centers(d), 1)}
     model, data = compile_workcell(spec, free_part_count=product_count - 1)
     return model, data, registry

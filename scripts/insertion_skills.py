@@ -147,7 +147,7 @@ class InsertionSkills(AssemblySkills):
                     'copy_end_s': float(trial.data.time)}
         return {**outcome, 'accepted': True, 'copy_end_s': float(trial.data.time),
                 'checks': result['checks'], 'minimum_final_depth_m': result['minimum_final_depth_m'],
-                **({'sleeve_fit': result['sleeve_fit']} if 'sleeve_fit' in result else {})}
+                **{key: result[key] for key in ('sleeve_fit', 'cover_fit') if key in result}}
 
     check_post_grasp = check_grasp  # Existing first-post callers.
 

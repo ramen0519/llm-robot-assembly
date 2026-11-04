@@ -66,10 +66,14 @@ def perforated_plate(width, height, hole_width, centers, floor=0.):
     return boxes
 
 
+def frame_hole_centers(d):
+    return [(x * d.post_spacing / 2, y * d.post_spacing / 2) for x, y in ((-1, -1), (1, -1), (-1, 1), (1, 1))]
+
+
 def product_parts(dim=None):
     d = dim or FrameDimensions()
     d.validate()
-    centers = [(x * d.post_spacing / 2, y * d.post_spacing / 2) for x, y in ((-1, -1), (1, -1), (-1, 1), (1, 1))]
+    centers = frame_hole_centers(d)
     parts = [{'id': 'base', 'kind': 'base', 'fixed': True, 'position_product_m': [0., 0., 0.],
               'requires': [], 'boxes': perforated_plate(d.base_width, d.base_height, d.hole_width, centers, d.socket_floor)}]
     for i, (x, y) in enumerate(centers, 1):

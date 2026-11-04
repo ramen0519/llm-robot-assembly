@@ -1,4 +1,5 @@
 """First upright post. Policy numbers describe the nominal TCP in the part frame."""
+from functools import lru_cache
 import math
 
 import numpy as np
@@ -39,6 +40,34 @@ def grasp_geometry(skills):
             'pad_axis_note': 'Positive TCP z points down at grasp. Open pad spans change during closure.',
             'gripper_max_open_mm': 85,
             'socket_insertion_depth_mm': skills.verifier.joint['nominal_insertion_depth_m'] * 1000}
+
+
+@lru_cache(maxsize=1)
+def unloaded_pad_reach_profile():
+    """Sample the same 2F-85 linkage closing in the robot-only scene, in its TCP frame."""
+    import mujoco
+    from move_gripper import command_at, pad_gaps_mm
+    from ur3e_with_gripper import load_robot_with_gripper
+
+    model, data = load_robot_with_gripper()
+    pads = [model.geom(f'gripper_{side}_pad{level}').id for side in ('left', 'right') for level in (1, 2)]
+    samples = []
+    for step in range(round(6 / model.opt.timestep)):
+        data.actuator('gripper_fingers_actuator').ctrl = command_at(data.time)[0]
+        mujoco.mj_step(model, data)
+        if step % 10:
+            continue
+        mujoco.mj_forward(model, data)
+        gap = min(pad_gaps_mm(model, data))
+        if gap <= 80 - 10*len(samples):
+            p, r = read_tcp_pose(data)
+            axis = r[:, 2]
+            reach = max((data.geom(i).xpos - p) @ axis
+                        + np.abs(data.geom(i).xmat.reshape(3, 3).T @ axis) @ model.geom_size[i] for i in pads)
+            samples.append((round(gap, 2), round(float(reach*1000), 2)))
+            if len(samples) == 8:
+                return tuple(samples)
+    raise ValueError('Gripper-only closure calibration failed to span the required jaw openings.')
 
 
 def lowest_pad_above_part_bottom(skills):
