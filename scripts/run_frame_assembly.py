@@ -157,6 +157,8 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
             'empty_approach_strategy': empty_approach_strategy,
             'transport_replan_budget': transport_replan_budget, 'transport_replan_budget_scope': 'episode',
             'policy_kind': 'openai_responses' if live else 'scripted', 'orchestration': mode, 'scenario': scenario,
+            'completion_protocol': ('physics_verifier' if live else 'scripted_skill_verification'
+                                    if mode == 'scripted' else 'policy_finish_then_physics_verifier'),
             'recovery_budget': remaining_recoveries, 'simulator_version': mujoco.__version__,
             'diagnostic_interval_s': recorder.diagnostic_interval_s, 'resume': resume,
             **({'llm_config': config.public(), 'api_calls_at_start': ledger.model_requests, 'initial_installed': sorted(installed),
@@ -269,7 +271,7 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
                         scenario='alignment_offset' if scenario == 'first_alignment_offset' and active == 'post_1' else 'nominal',
                         recovery_budget=remaining_recoveries, on_event=event,
                         transport_replan_budget=min(1, replans_at_part_start),
-                        task_id='four_post_frame_wide/' + active, insert_result_skill=expected, propose_grasp=live,
+                        task_id='four_post_frame_wide/' + active, insert_result_skill=expected, propose_grasp=live, finish_on_verified_insert=live,
                         retry_history=parent['graph_states'][active] if resume and active == resume['active_part'] else None)
                     graph_states[active] = state
                     remaining_recoveries -= state['recoveries']
@@ -320,8 +322,20 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
     finally:
         if client is not None:
             client.close()
-    checkpoint = (episode_boundary(skills.model, skills.data, registry, installed)
-                  if skills and status == 'stopped' and error == 'Grasp proposal budget exhausted before pick.' else None)
+    # Preserve valid physics on every terminal outcome, including API failures.
+    # A saved state alone does not authorize resuming an uncertain action.
+    terminal_checkpoint, checkpoint_error = None, None
+    if live and skills:
+        try:
+            terminal_checkpoint = episode_boundary(skills.model, skills.data, registry, installed)
+            if not np.isfinite(terminal_checkpoint['integration_state']).all():
+                raise ValueError('Cannot preserve a non-finite integration state.')
+            json.dumps(terminal_checkpoint, allow_nan=False)
+        except Exception as exc:
+            terminal_checkpoint = None
+            checkpoint_error = type(exc).__name__
+    checkpoint = (terminal_checkpoint if status == 'stopped'
+                  and error == 'Grasp proposal budget exhausted before pick.' else None)
     segment_elapsed = time.monotonic() - wall_started
     result = {'status': status, 'error': error, 'run_dir': str(recorder.run_dir),
               'planner_provenance': planner_provenance, 'execution_order': [r['part_id'] for r in results],
@@ -345,7 +359,8 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
               'policy_kind': 'openai_responses' if live else 'scripted', 'api_calls': ledger.model_requests if ledger else 0,
               **({'part_episodes': part_episodes, 'final_verification': final_verification,
                   'llm_usage': ledger.summary() if ledger else None} if live else {}),
-              'resume': resume, 'resume_checkpoint': checkpoint, 'segment_execution_order': segment_installed,
+              'resume': resume, 'resume_checkpoint': checkpoint, 'terminal_checkpoint': terminal_checkpoint,
+              'checkpoint_error': checkpoint_error, 'segment_execution_order': segment_installed,
               'segment_wall_elapsed_s': segment_elapsed,
               'diagnostic_interval_s': recorder.diagnostic_interval_s,
               'wall_elapsed_s': segment_elapsed + (parent['wall_elapsed_s'] if parent else 0.)}

@@ -28,11 +28,12 @@ class AssemblyState(TypedDict):
     error: str | None
     experiences: list[dict]
     grasp_trials: list[dict]
+    completion_source: str | None
 
 
 def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, on_event=None,
                        scenario='nominal', recovery_budget=1, memory_lookup=None,
-                       task_id='four_post_frame_first_joint/v1', insert_result_skill='insert_post/v1', condition_fingerprint=None, transport_replan_budget=0, recipe_summaries=None, propose_grasp=False, retry_history=None):
+                       task_id='four_post_frame_first_joint/v1', insert_result_skill='insert_post/v1', condition_fingerprint=None, transport_replan_budget=0, recipe_summaries=None, propose_grasp=False, retry_history=None, finish_on_verified_insert=False):
     from post_grasp import MAX_PROPOSALS
     prior = deepcopy(retry_history)
     if prior is not None and (mode != 'single' or not propose_grasp or scenario != 'nominal'
@@ -60,7 +61,7 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
     initial = {'status': 'running', 'observation': None, 'observation_revision': 0,
                'active_role': 'assembly', 'action': None, 'completed': [], 'last_result': None,
                'verification': None, 'failures': [], 'pending_failure': None, 'recoveries': 0, 'transport_replans': 0,
-               'policy_calls': 0, 'policy_mode': mode, 'error': None, 'experiences': [], 'grasp_trials': []}
+               'policy_calls': 0, 'policy_mode': mode, 'error': None, 'experiences': [], 'grasp_trials': [], 'completion_source': None}
     fault_injected = False
     if prior:
         initial.update(grasp_trials=prior['grasp_trials'], policy_calls=prior['policy_calls'],
@@ -147,7 +148,8 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
             evidence = skills.insertion_evidence([row])
             if state['completed'] != ['pick', 'insert']:
                 raise ValueError('Finish requires both verified actions.')
-            return {'status': 'success', 'error': None, 'verification': {**evidence, 'measurements': row}}
+            return {'status': 'success', 'error': None, 'completion_source': 'policy_finish_then_physics_verifier',
+                    'verification': {**evidence, 'measurements': row}}
         else:
             raise ValueError('Unsupported executable action.')
         return {'last_result': json_safe(result)}
@@ -174,6 +176,11 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
             update['completed'] = [*state['completed'], 'insert' if name == 'replan_insert' else name]
             if name == 'replan_insert':
                 update.update(pending_failure=None, error=None)
+        if finish_on_verified_insert and name in ('insert', 'replan_insert'):
+            if update.get('completed') != ['pick', 'insert']:
+                raise ValueError('Completion requires both physically verified actions.')
+            # The current-state verifier, never an LLM declaration, is the authority.
+            update.update(status='success', error=None, completion_source='physics_verifier')
         return update
 
     def guarded(name, function):
@@ -202,7 +209,8 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
                                    'observation_revision': current['observation_revision'], 'action': current['action'],
                                    **({'grasp_trial': current['grasp_trials'][-1]}
                                       if name == 'check_grasp' and update.get('grasp_trials') else {}),
-                                   'completed': current['completed'], 'recoveries': current['recoveries'],
+                                   'completed': current['completed'], 'completion_source': current['completion_source'],
+                                   'recoveries': current['recoveries'],
                                    'transport_replans': current['transport_replans'],
                                    'simulation_time_s': float(skills.data.time), 'failure_count': len(current['failures']),
                                    'experience_ids': [r['record_id'] for r in current['experiences']],
