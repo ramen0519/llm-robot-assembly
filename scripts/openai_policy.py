@@ -70,6 +70,11 @@ def build_request(config, context):
                               'a grip on a raised feature must overlap its vertical faces '
                               'while keeping the pads above the sheet throughout approach and closure.')
         grasp_instruction = (' Decide your own numeric grasp for pick using the measured geometry, finger clearance, '
+                             'and explicit coordinate frames. x_mm/y_mm/z_mm are PART-frame offsets of the TCP, '
+                             'not offsets in the TCP frame. For an upright part, increasing z_mm raises the grasp; '
+                             'decreasing z_mm lowers it. The downward TCP +Z axis used to describe pad spans '
+                             'does NOT reverse the sign of the part-frame z_mm parameter. Check that your numeric '
+                             'change has the direction described in your reason. Consider '
                              f'approach and insertion. {clearance_goal} On a rejected trial '
                              'use its measured contact and held pad geometry to decide which parameters to revise, '
                              'or stop. For stop use null. No preselected pose or choice list is provided.')

@@ -2,6 +2,7 @@
 import argparse
 import csv
 from contextlib import nullcontext
+from copy import deepcopy
 import hashlib
 import json
 import math
@@ -64,7 +65,7 @@ def episode_boundary(model, data, registry, installed):
 def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='scripted', scenario='nominal', show_viewer=False,
                   transport_strategy='direct', transfer_obstacle=False, observer=None,
                   transport_replan_budget=0, empty_approach_strategy=None, policies=None, planner_candidate=None,
-                  post_sleeve_llm_config=None, llm_config=None):
+                  post_sleeve_llm_config=None, llm_config=None, resume_run=None):
     if mode not in ('scripted', 'single', 'roles') or scenario not in ('nominal', 'first_alignment_offset'):
         raise ValueError('Unknown orchestration mode/scenario')
     if mode == 'scripted' and scenario != 'nominal':
@@ -81,6 +82,8 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
         raise ValueError('Unknown empty-gripper approach strategy.')
     live_pair = post_sleeve_llm_config is not None
     live = live_pair or llm_config is not None
+    if resume_run is not None and (llm_config is None or scenario != 'nominal'):
+        raise ValueError('Resume requires the full live single-policy nominal frame.')
     if llm_config is not None and (live_pair or mode != 'single' or policies is not None or planner_candidate is not None):
         raise ValueError('The live frame requires single mode and one configuration with the built-in prerequisite order.')
     if live_pair and (mode != 'single' or product_count != 3 or policies is not None or planner_candidate is not None):
@@ -90,7 +93,7 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
         raise ValueError('Injected policies must be labelled scripted and use graph mode; live API accounting is not enabled here.')
     wall_started = time.monotonic()
     recorder = AssemblyRecorder(output_root or ROOT / 'runs/step23_frame', skill='scripted_frame_assembly/v1' if mode == 'scripted' else 'frame_graph/v1',
-                                validation_profile='compound_frame_assembly/v1')
+                                validation_profile='compound_frame_assembly/v1', diagnostic_interval_s=.02)
     skills, installed, results = None, set(), []
     status, error = 'failed', None
     graph_states, failures = {}, []
@@ -100,6 +103,7 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
     client, ledger = None, None
     part_episodes, final_verification = {}, None
     previous_end = None
+    parent, resume, segment_installed = None, None, []
     track_metrics = (live or transport_strategy != 'direct' or transfer_obstacle or transport_replan_budget
                      or empty_approach_strategy == 'direct_then_rrt')
     remaining_replans = transport_replan_budget
@@ -111,15 +115,40 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
             from llm_runtime import ApiLedger, create_openai_client, load_llm_config
             from openai_policy import OpenAIAssemblyPolicy
             config = load_llm_config(post_sleeve_llm_config if live_pair else llm_config).validate(live=True)
-            client = create_openai_client(config)
-            ledger = ApiLedger(config, recorder.run_dir / 'llm_events.jsonl')
-            policies = {'single': OpenAIAssemblyPolicy(config, client, ledger)}
         model, data, registry = build_frame_scene(product_count, transfer_obstacle=transfer_obstacle,
                                                  first_sleeve_cell=live_pair)
         if planner_candidate is not None:
             from planner_candidate_input import load_robot_candidate
             order, planner_provenance = load_robot_candidate(planner_candidate, registry)
             registry = {name: registry[name] for name in order}
+        if resume_run is not None:
+            from frame_resume import prepare_resume, carry_accounting, copy_prefix_artifacts
+            options = {'product_parts_present': product_count, 'scenario': scenario,
+                'transport_strategy': transport_strategy, 'transfer_obstacle': transfer_obstacle,
+                'empty_approach_strategy': empty_approach_strategy, 'transport_replan_budget': transport_replan_budget}
+            data, parent, resume = prepare_resume(resume_run, model, registry, config, options,
+                                                 restore_episode_data, episode_boundary)
+            installed = set(parent['completed_installations'])
+            results = deepcopy(parent['results'])
+            graph_states = deepcopy(parent['graph_states'])
+            part_episodes = deepcopy(parent['part_episodes'])
+            previous_end = part_episodes[parent['execution_order'][-1]]['end'] if installed else None
+            remaining_recoveries = parent['recovery_budget_remaining']
+            remaining_replans = parent['transport_replan_budget_remaining']
+            recorder.samples = parent['samples']
+            failures = deepcopy(parent['failures'])
+            transport_attempts = deepcopy(parent['transport_attempts'])
+            empty_approach_attempts = deepcopy(parent['empty_approach_attempts'])
+            motion_preflight_failures = deepcopy(parent['motion_preflight_failures'])
+            part_metrics = deepcopy(parent['part_metrics'])
+            policy_replan_attempts = deepcopy(parent['policy_replan_attempts'])
+            copy_prefix_artifacts(resume_run, recorder.run_dir, installed)
+        if live:
+            ledger = ApiLedger(config, recorder.run_dir / 'llm_events.jsonl')
+            if resume:
+                carry_accounting(ledger, parent, resume_run)
+            client = create_openai_client(config)
+            policies = {'single': OpenAIAssemblyPolicy(config, client, ledger)}
         write_json(recorder.run_dir / 'resolved_config.json', {
             'registry': registry, 'environment': 'simulation', 'observation_source': 'sim_ground_truth',
             'planner_provenance': planner_provenance,
@@ -129,20 +158,23 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
             'transport_replan_budget': transport_replan_budget, 'transport_replan_budget_scope': 'episode',
             'policy_kind': 'openai_responses' if live else 'scripted', 'orchestration': mode, 'scenario': scenario,
             'recovery_budget': remaining_recoveries, 'simulator_version': mujoco.__version__,
-            **({'llm_config': config.public(), 'api_calls_at_start': 0, 'initial_installed': [],
+            'diagnostic_interval_s': recorder.diagnostic_interval_s, 'resume': resume,
+            **({'llm_config': config.public(), 'api_calls_at_start': ledger.model_requests, 'initial_installed': sorted(installed),
                 'sequence': list(registry)} if live else {'api_calls': 0}),
             'implementation_sha256': {name: hashlib.sha256((ROOT / 'scripts' / name).read_bytes()).hexdigest()
                 for name in ('frame_assembly_scene.py', 'frame_assembly_skills.py', 'workcell_motion.py', 'run_frame_assembly.py',
                              'insertion_scene.py', 'insertion_skills.py', 'loaded_transport.py', 'joint_path_planner.py', 'empty_approach.py',
                              'assembly_graph.py', 'assembly_policy.py', 'rejected_insert.py', 'planner_candidate_input.py',
-                             'assembly_skills.py', 'post_grasp.py', 'openai_policy.py', 'llm_runtime.py', 'insertion_recovery.py', 'frame_product.py')}})
+                             'assembly_skills.py', 'post_grasp.py', 'openai_policy.py', 'llm_runtime.py', 'insertion_recovery.py', 'frame_product.py',
+                             'frame_resume.py', 'run_pick_place.py')}})
         viewer_context = mujoco.viewer.launch_passive(model, data) if show_viewer else nullcontext(None)
-        with viewer_context as viewer, recorder.trace_path.open('w', newline='', encoding='utf-8') as stream, (recorder.run_dir / 'graph_events.jsonl').open('w', encoding='utf-8') as events:
+        with viewer_context as viewer, recorder.trace_path.open('a' if resume else 'w', newline='', encoding='utf-8') as stream, (recorder.run_dir / 'graph_events.jsonl').open('a' if resume else 'w', encoding='utf-8') as events:
             clock = {'last_draw': -1., 'wall': time.monotonic(), 'sim': float(data.time)}
             if viewer:
                 set_workcell_camera(viewer.cam, next(iter(registry.values()))['config'])
             writer = csv.DictWriter(stream, fieldnames=['active_part_id', *INSERTION_TRACE_FIELDS])
-            writer.writeheader()
+            if not resume:
+                writer.writeheader()
             def sample(row):
                 writer.writerow({'active_part_id': skills.active, **row})
                 recorder.remember(skills, row)
@@ -181,10 +213,12 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
                 write_json(recorder.run_dir / f'motion_preflight_{len(motion_preflight_failures):03d}.json', report)
                 write_json(recorder.run_dir / 'failure_report.json', report)
             for active, entry in registry.items():
-                part_metrics[active] = {'verified_samples': 0, 'transport_samples': 0,
+                if active in installed:
+                    continue
+                part_metrics.setdefault(active, {'verified_samples': 0, 'transport_samples': 0,
                     'maximum_transport_slip_m': 0., 'maximum_transport_tilt_rad': 0.,
                     'previous_parts': {name: {'maximum_position_error_m': 0., 'maximum_orientation_error_rad': 0.}
-                                       for name in installed}}
+                                       for name in installed}})
                 skills = FrameSkills(model, data, active, registry, installed, sample, stage,
                     transport_strategy=transport_strategy, on_transport_preflight_failure=transport_failure,
                     empty_approach_strategy=empty_approach_strategy)
@@ -193,9 +227,16 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
                 empty_approach_attempts[active] = skills.empty_approach_attempts
                 if live:
                     start = episode_boundary(model, data, registry, installed)
+                    if resume and active == resume['active_part']:
+                        if start != resume['restored_boundary']:
+                            raise ValueError('Restored scene changed before the resumed graph.')
+                        part_episodes[active]['resumed_at'] = start
+                        part_episodes[active]['api_calls_at_resume'] = ledger.model_requests
+                        start = part_episodes[active]['start']
                     if previous_end is not None and start != previous_end:
                         raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, 'Scene changed between component installations.')
-                    part_episodes[active] = {'start': start, 'api_calls_at_start': ledger.model_requests}
+                    if not (resume and active == resume['active_part']):
+                        part_episodes[active] = {'start': start, 'api_calls_at_start': ledger.model_requests}
                     if not installed and snapshots:
                         save_snapshot(model, data, skills.config, recorder.run_dir / 'before_assembly.png')
                 if observer:
@@ -228,7 +269,8 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
                         scenario='alignment_offset' if scenario == 'first_alignment_offset' and active == 'post_1' else 'nominal',
                         recovery_budget=remaining_recoveries, on_event=event,
                         transport_replan_budget=min(1, replans_at_part_start),
-                        task_id='four_post_frame_wide/' + active, insert_result_skill=expected, propose_grasp=live)
+                        task_id='four_post_frame_wide/' + active, insert_result_skill=expected, propose_grasp=live,
+                        retry_history=parent['graph_states'][active] if resume and active == resume['active_part'] else None)
                     graph_states[active] = state
                     remaining_recoveries -= state['recoveries']
                     if state['status'] != 'success':
@@ -236,13 +278,14 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
                         break
                     result = skills.results[-1]
                 installed.add(active)
+                segment_installed.append(active)
                 results.append(result)
                 if live:
                     previous_end = episode_boundary(model, data, registry, installed)
                     part_episodes[active].update(end=previous_end, executed_approach=skills.results[0],
                                                  api_calls_at_end=ledger.model_requests)
                     write_json(recorder.run_dir / 'progress.json', {
-                        'status': 'running', 'initial_installed': [], 'completed_installations': sorted(installed),
+                        'status': 'running', 'resume': resume, 'completed_installations': sorted(installed),
                         'next_parts': [name for name in registry if name not in installed],
                         'part_episodes': part_episodes, 'results': results, 'graph_states': graph_states,
                         'recovery_budget_remaining': remaining_recoveries,
@@ -277,6 +320,9 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
     finally:
         if client is not None:
             client.close()
+    checkpoint = (episode_boundary(skills.model, skills.data, registry, installed)
+                  if skills and status == 'stopped' and error == 'Grasp proposal budget exhausted before pick.' else None)
+    segment_elapsed = time.monotonic() - wall_started
     result = {'status': status, 'error': error, 'run_dir': str(recorder.run_dir),
               'planner_provenance': planner_provenance, 'execution_order': [r['part_id'] for r in results],
               'product_parts_present': product_count, 'robot_installations_goal': product_count - 1,
@@ -299,7 +345,10 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
               'policy_kind': 'openai_responses' if live else 'scripted', 'api_calls': ledger.model_requests if ledger else 0,
               **({'part_episodes': part_episodes, 'final_verification': final_verification,
                   'llm_usage': ledger.summary() if ledger else None} if live else {}),
-              'wall_elapsed_s': time.monotonic() - wall_started}
+              'resume': resume, 'resume_checkpoint': checkpoint, 'segment_execution_order': segment_installed,
+              'segment_wall_elapsed_s': segment_elapsed,
+              'diagnostic_interval_s': recorder.diagnostic_interval_s,
+              'wall_elapsed_s': segment_elapsed + (parent['wall_elapsed_s'] if parent else 0.)}
     write_json(recorder.run_dir / 'result.json', result)
     print(f'{status}: {recorder.run_dir}', flush=True)
     if error:
@@ -311,6 +360,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--parts', type=int, choices=range(2, 11), default=6)
     parser.add_argument('--llm-config', type=Path, help='Live single-policy numeric grasps for all requested frame components')
+    parser.add_argument('--resume-run', type=Path, help='Continue a verified pre-pick stop; preserve the scene, rejected trials and total API budget')
     parser.add_argument('--post-sleeve-llm-config', type=Path, help='Live post then sleeve in one initially empty fixture (--parts 3 --mode single)')
     parser.add_argument('--snapshots', action='store_true')
     parser.add_argument('--transport-strategy', choices=['direct', 'direct_then_rrt'], default='direct')
@@ -326,5 +376,5 @@ if __name__ == '__main__':
         show_viewer=args.viewer, transport_strategy=args.transport_strategy, transfer_obstacle=args.transfer_obstacle,
         empty_approach_strategy=args.empty_approach_strategy, transport_replan_budget=args.transport_replan_budget,
         planner_candidate=args.planner_candidate, post_sleeve_llm_config=args.post_sleeve_llm_config,
-        llm_config=args.llm_config)
+        llm_config=args.llm_config, resume_run=args.resume_run)
     raise SystemExit(0 if result['status'] == 'success' else 1)

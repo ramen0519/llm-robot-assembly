@@ -49,7 +49,12 @@ def save_snapshot(model, data, config, path):
 
 
 class AssemblyRecorder:
-    def __init__(self, output_root, *, skill=None, validation_profile="one_box_pick_place/v1"):
+    def __init__(self, output_root, *, skill=None, validation_profile="one_box_pick_place/v1", diagnostic_interval_s=0.):
+        if (type(diagnostic_interval_s) not in (int, float)
+                or not 0 <= diagnostic_interval_s <= .05):
+            raise ValueError('Diagnostic snapshot interval must be between 0 and 50 milliseconds.')
+        self.diagnostic_interval_s = diagnostic_interval_s
+        self.last_diagnostic_time, self.last_diagnostic_stage = None, None
         self.skill, self.validation_profile = skill, validation_profile
         folder = TrialRecorder(output_root)  # Reuse the unique run-directory convention only.
         self.run_dir, self.run_id = folder.run_dir, folder.run_id
@@ -59,11 +64,18 @@ class AssemblyRecorder:
 
     def remember(self, skills, row):
         self.samples += 1
+        # The caller still verifies physics and records its trace at EVERY simulation step.
+        # Only the detailed last-valid diagnostic snapshot is sampled less often.
+        if (self.last_diagnostic_time is not None and row['stage'] == self.last_diagnostic_stage
+                and skills.data.time - self.last_diagnostic_time < self.diagnostic_interval_s - 1e-9):
+            return
         observation = capture_observation(skills.model, skills.data, serialize=False)
         if observation["valid"]:
             observation["workcell"] = skills.observe(serialize=False)
             observation["measurements"] = json_safe(row)
             self.last_valid = observation
+            self.last_diagnostic_time = float(skills.data.time)
+            self.last_diagnostic_stage = row['stage']
 
     def fail(self, error, skills, through):
         if isinstance(error, FailureEvent):

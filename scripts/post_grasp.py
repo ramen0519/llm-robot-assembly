@@ -10,7 +10,11 @@ from view_tcp import read_tcp_pose
 
 GRASP_FIELDS = ('x_mm', 'y_mm', 'z_mm', 'jaw_yaw_deg')
 MAX_PROPOSALS = 3
-GRASP_SCHEMA = {'type': 'object', 'properties': {k: {'type': 'number'} for k in GRASP_FIELDS},
+GRASP_SCHEMA = {'type': 'object', 'properties': {k: {'type': 'number', 'description': description} for k, description in zip(GRASP_FIELDS, (
+                'TCP offset along the PART local X axis, in millimetres.',
+                'TCP offset along the PART local Y axis, in millimetres.',
+                'TCP offset along the PART local Z axis, in millimetres. For this upright part, a larger value is HIGHER. This is NOT the tool TCP Z axis.',
+                'Closing-axis azimuth in the PART XY plane, from +X toward +Y, in degrees.'))},
                 'required': list(GRASP_FIELDS), 'additionalProperties': False}
 
 

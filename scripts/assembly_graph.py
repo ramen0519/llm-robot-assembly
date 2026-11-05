@@ -32,7 +32,16 @@ class AssemblyState(TypedDict):
 
 def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, on_event=None,
                        scenario='nominal', recovery_budget=1, memory_lookup=None,
-                       task_id='four_post_frame_first_joint/v1', insert_result_skill='insert_post/v1', condition_fingerprint=None, transport_replan_budget=0, recipe_summaries=None, propose_grasp=False):
+                       task_id='four_post_frame_first_joint/v1', insert_result_skill='insert_post/v1', condition_fingerprint=None, transport_replan_budget=0, recipe_summaries=None, propose_grasp=False, retry_history=None):
+    from post_grasp import MAX_PROPOSALS
+    prior = deepcopy(retry_history)
+    if prior is not None and (mode != 'single' or not propose_grasp or scenario != 'nominal'
+            or prior.get('status') != 'stopped' or prior.get('error') != 'Grasp proposal budget exhausted before pick.'
+            or prior.get('completed') != [] or len(prior.get('grasp_trials', [])) != MAX_PROPOSALS
+            or any(t.get('accepted') is not False for t in prior['grasp_trials'])
+            or prior.get('policy_calls') != MAX_PROPOSALS):
+        raise ValueError('Only one bounded retry of rejected, unexecuted grasp proposals is supported.')
+    trial_limit = MAX_PROPOSALS + (len(prior['grasp_trials']) if prior else 0)
     if mode not in ('single', 'roles') or scenario not in ('nominal', 'alignment_offset'):
         raise ValueError('Unknown policy mode/scenario.')
     if type(recovery_budget) is not int or recovery_budget not in (0, 1):
@@ -53,9 +62,13 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
                'verification': None, 'failures': [], 'pending_failure': None, 'recoveries': 0, 'transport_replans': 0,
                'policy_calls': 0, 'policy_mode': mode, 'error': None, 'experiences': [], 'grasp_trials': []}
     fault_injected = False
+    if prior:
+        initial.update(grasp_trials=prior['grasp_trials'], policy_calls=prior['policy_calls'],
+                       observation_revision=prior['observation_revision'])
 
     def settle(state):
-        skills.settle()
+        if prior is None:  # Runner has already restored and re-observed the stopped scene.
+            skills.settle()
         return {}
 
     def observe(state):
@@ -84,22 +97,20 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
         if 'recover_alignment' in context['allowed_skills']:
             context['alignment_observation'] = alignment_observation(skills)
         if propose_grasp and 'pick' in context['allowed_skills']:
-            from post_grasp import MAX_PROPOSALS
             context['grasp_task'] = {'geometry': skills.grasp_geometry(), 'previous_trials': state['grasp_trials'],
-                                     'attempts_remaining': MAX_PROPOSALS - len(state['grasp_trials'])}
+                                     'attempts_remaining': trial_limit - len(state['grasp_trials'])}
         proposal = validate_proposal(policies[role].propose(deepcopy(context)), context)
         return {'action': proposal, 'policy_calls': state['policy_calls'] + 1,
                 'last_result': None, 'verification': None}
 
     def check_grasp(state):
-        from post_grasp import MAX_PROPOSALS
         action = state['action']
         if state['observation'] != _snapshot(skills) or action['observation_revision'] != state['observation_revision']:
             raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, 'Observation changed before grasp preflight.')
         trial = skills.check_grasp(action['grasp'])
         trial['observation_revision'] = state['observation_revision']
         trials = [*state['grasp_trials'], trial]
-        if not trial['accepted'] and len(trials) >= MAX_PROPOSALS:
+        if not trial['accepted'] and len(trials) >= trial_limit:
             return {'grasp_trials': trials, 'status': 'stopped', 'error': 'Grasp proposal budget exhausted before pick.'}
         return {'grasp_trials': trials}
 
