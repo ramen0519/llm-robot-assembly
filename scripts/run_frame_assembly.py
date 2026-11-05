@@ -19,8 +19,36 @@ from workcell_scene import ROOT, set_workcell_camera, part_name
 from workcell_verification import rotation_error
 
 
+def model_fingerprint(model):
+    """Include compiled geometry and physics options when identifying a checkpoint."""
+    buffer = np.empty(mujoco.mj_sizeModel(model), dtype=np.uint8)
+    mujoco.mj_saveModel(model, buffer=buffer)
+    return hashlib.sha256(buffer.tobytes()).hexdigest()
+
+
+def restore_episode_data(model, checkpoint):
+    """Restore simulation data only; this does not resume a graph or renew an API budget."""
+    spec = mujoco.mjtState.mjSTATE_INTEGRATION
+    if (checkpoint['simulator_version'] != mujoco.__version__
+            or checkpoint['state_spec'] != int(spec)
+            or checkpoint['model_sha256'] != model_fingerprint(model)):
+        raise ValueError('Checkpoint simulator, model or state specification differs.')
+    state = np.asarray(checkpoint['integration_state'], dtype=np.float64)
+    if (state.shape != (mujoco.mj_stateSize(model, spec),) or not np.isfinite(state).all()
+            or hashlib.sha256(state.tobytes()).hexdigest() != checkpoint['integration_sha256']):
+        raise ValueError('Checkpoint integration state is incomplete or corrupted.')
+    restored = mujoco.MjData(model)
+    mujoco.mj_setState(model, restored, state, spec)
+    mujoco.mj_forward(model, restored)
+    actual = np.empty_like(state)
+    mujoco.mj_getState(model, restored, actual, spec)
+    if not np.array_equal(actual, state):
+        raise ValueError('Recomputing observations changed the restored integration state.')
+    return restored
+
+
 def episode_boundary(model, data, registry, installed):
-    """Fingerprint the complete integrator state, plus human-readable measured part poses."""
+    """Save the complete integrator state, plus human-readable measured part poses."""
     spec = mujoco.mjtState.mjSTATE_INTEGRATION
     state = np.empty(mujoco.mj_stateSize(model, spec))
     mujoco.mj_getState(model, data, state, spec)
@@ -28,13 +56,15 @@ def episode_boundary(model, data, registry, installed):
                     'quaternion_wxyz': data.body(part_name(entry['config'])).xquat.tolist()}
              for name, entry in registry.items()}
     return {'time_s': float(data.time), 'installed': sorted(installed), 'parts': parts,
-            'integration_sha256': hashlib.sha256(state.tobytes()).hexdigest()}
+            'integration_sha256': hashlib.sha256(state.tobytes()).hexdigest(),
+            'integration_state': state.tolist(), 'state_spec': int(spec),
+            'simulator_version': mujoco.__version__, 'model_sha256': model_fingerprint(model)}
 
 
 def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='scripted', scenario='nominal', show_viewer=False,
                   transport_strategy='direct', transfer_obstacle=False, observer=None,
                   transport_replan_budget=0, empty_approach_strategy=None, policies=None, planner_candidate=None,
-                  post_sleeve_llm_config=None):
+                  post_sleeve_llm_config=None, llm_config=None):
     if mode not in ('scripted', 'single', 'roles') or scenario not in ('nominal', 'first_alignment_offset'):
         raise ValueError('Unknown orchestration mode/scenario')
     if mode == 'scripted' and scenario != 'nominal':
@@ -50,6 +80,9 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
     if empty_approach_strategy not in (None, 'direct', 'direct_then_rrt'):
         raise ValueError('Unknown empty-gripper approach strategy.')
     live_pair = post_sleeve_llm_config is not None
+    live = live_pair or llm_config is not None
+    if llm_config is not None and (live_pair or mode != 'single' or policies is not None or planner_candidate is not None):
+        raise ValueError('The live frame requires single mode and one configuration with the built-in prerequisite order.')
     if live_pair and (mode != 'single' or product_count != 3 or policies is not None or planner_candidate is not None):
         raise ValueError('The live post/sleeve cell requires 3 parts, single policy and its built-in prerequisite order.')
     if policies is not None and (mode == 'scripted' or not isinstance(policies, dict)
@@ -65,19 +98,19 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
     policy_replan_attempts = {}
     planner_provenance = None
     client, ledger = None, None
-    part_episodes = {}
+    part_episodes, final_verification = {}, None
     previous_end = None
-    track_metrics = (live_pair or transport_strategy != 'direct' or transfer_obstacle or transport_replan_budget
+    track_metrics = (live or transport_strategy != 'direct' or transfer_obstacle or transport_replan_budget
                      or empty_approach_strategy == 'direct_then_rrt')
     remaining_replans = transport_replan_budget
     remaining_recoveries = 1 if mode != 'scripted' else 0
     from assembly_policy import ScriptedPolicy
     policies = policies if policies is not None else {key: ScriptedPolicy(key) for key in (['single'] if mode == 'single' else ['assembly', 'recovery'])}
     try:
-        if live_pair:
+        if live:
             from llm_runtime import ApiLedger, create_openai_client, load_llm_config
             from openai_policy import OpenAIAssemblyPolicy
-            config = load_llm_config(post_sleeve_llm_config).validate(live=True)
+            config = load_llm_config(post_sleeve_llm_config if live_pair else llm_config).validate(live=True)
             client = create_openai_client(config)
             ledger = ApiLedger(config, recorder.run_dir / 'llm_events.jsonl')
             policies = {'single': OpenAIAssemblyPolicy(config, client, ledger)}
@@ -94,15 +127,15 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
             'transport_strategy': transport_strategy, 'transfer_obstacle': transfer_obstacle,
             'empty_approach_strategy': empty_approach_strategy,
             'transport_replan_budget': transport_replan_budget, 'transport_replan_budget_scope': 'episode',
-            'policy_kind': 'openai_responses' if live_pair else 'scripted', 'orchestration': mode, 'scenario': scenario,
+            'policy_kind': 'openai_responses' if live else 'scripted', 'orchestration': mode, 'scenario': scenario,
             'recovery_budget': remaining_recoveries, 'simulator_version': mujoco.__version__,
             **({'llm_config': config.public(), 'api_calls_at_start': 0, 'initial_installed': [],
-                'sequence': list(registry)} if live_pair else {'api_calls': 0}),
+                'sequence': list(registry)} if live else {'api_calls': 0}),
             'implementation_sha256': {name: hashlib.sha256((ROOT / 'scripts' / name).read_bytes()).hexdigest()
                 for name in ('frame_assembly_scene.py', 'frame_assembly_skills.py', 'workcell_motion.py', 'run_frame_assembly.py',
                              'insertion_scene.py', 'insertion_skills.py', 'loaded_transport.py', 'joint_path_planner.py', 'empty_approach.py',
                              'assembly_graph.py', 'assembly_policy.py', 'rejected_insert.py', 'planner_candidate_input.py',
-                             'assembly_skills.py', 'post_grasp.py', 'openai_policy.py', 'llm_runtime.py', 'insertion_recovery.py')}})
+                             'assembly_skills.py', 'post_grasp.py', 'openai_policy.py', 'llm_runtime.py', 'insertion_recovery.py', 'frame_product.py')}})
         viewer_context = mujoco.viewer.launch_passive(model, data) if show_viewer else nullcontext(None)
         with viewer_context as viewer, recorder.trace_path.open('w', newline='', encoding='utf-8') as stream, (recorder.run_dir / 'graph_events.jsonl').open('w', encoding='utf-8') as events:
             clock = {'last_draw': -1., 'wall': time.monotonic(), 'sim': float(data.time)}
@@ -158,11 +191,11 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
                 transport_attempts[active] = skills.transport_attempts
                 policy_replan_attempts[active] = skills.replan_attempts
                 empty_approach_attempts[active] = skills.empty_approach_attempts
-                if live_pair:
+                if live:
                     start = episode_boundary(model, data, registry, installed)
                     if previous_end is not None and start != previous_end:
                         raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, 'Scene changed between component installations.')
-                    part_episodes[active] = {'start': start}
+                    part_episodes[active] = {'start': start, 'api_calls_at_start': ledger.model_requests}
                     if not installed and snapshots:
                         save_snapshot(model, data, skills.config, recorder.run_dir / 'before_assembly.png')
                 if observer:
@@ -195,7 +228,7 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
                         scenario='alignment_offset' if scenario == 'first_alignment_offset' and active == 'post_1' else 'nominal',
                         recovery_budget=remaining_recoveries, on_event=event,
                         transport_replan_budget=min(1, replans_at_part_start),
-                        task_id='four_post_frame_wide/' + active, insert_result_skill=expected, propose_grasp=live_pair)
+                        task_id='four_post_frame_wide/' + active, insert_result_skill=expected, propose_grasp=live)
                     graph_states[active] = state
                     remaining_recoveries -= state['recoveries']
                     if state['status'] != 'success':
@@ -204,15 +237,39 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
                     result = skills.results[-1]
                 installed.add(active)
                 results.append(result)
-                if live_pair:
+                if live:
                     previous_end = episode_boundary(model, data, registry, installed)
-                    part_episodes[active].update(end=previous_end, executed_approach=skills.results[0])
+                    part_episodes[active].update(end=previous_end, executed_approach=skills.results[0],
+                                                 api_calls_at_end=ledger.model_requests)
+                    write_json(recorder.run_dir / 'progress.json', {
+                        'status': 'running', 'initial_installed': [], 'completed_installations': sorted(installed),
+                        'next_parts': [name for name in registry if name not in installed],
+                        'part_episodes': part_episodes, 'results': results, 'graph_states': graph_states,
+                        'recovery_budget_remaining': remaining_recoveries,
+                        'transport_replan_budget_remaining': remaining_replans, 'llm_usage': ledger.summary()})
                 if snapshots:
                     save_snapshot(model, data, skills.config, recorder.run_dir / f'after_{active}.png')
             else:
                 row = skills.verifier.sample(data, skills.motion.reference, allow_support=True, allow_grasp=False)
-                skills.insertion_evidence([row])
+                terminal = skills.insertion_evidence([row])
                 skills.verifier.verify_other_parts(data)
+                if live:
+                    before = episode_boundary(model, data, registry, installed)
+                    sleeve_fits = {}
+                    parts = {}
+                    for name in sorted(installed):
+                        entry = registry[name]
+                        body = data.body(part_name(entry['config']))
+                        parts[name] = {
+                            'position_error_m': float(np.linalg.norm(body.xpos - entry['joint']['target_part_center_world_m'])),
+                            'orientation_error_rad': rotation_error(body.xmat.reshape(3, 3), entry['joint']['target_part_rotation_world'])}
+                        if entry['kind'] == 'sleeve':
+                            check = FrameSkills(model, data, name, registry, installed)
+                            sleeve_fits[name] = check.verify_sleeve_fit()
+                    if before != episode_boundary(model, data, registry, installed):
+                        raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, 'Final inspection changed the physics state.')
+                    final_verification = {'terminal': terminal, 'sleeve_fits': sleeve_fits, 'parts': parts,
+                                          'all_installed_parts_preserved': True, 'boundary': before}
                 status = 'success'
     except (Exception, KeyboardInterrupt) as exc:
         status = recorder.fail(exc, skills, 23)
@@ -239,8 +296,9 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
               'part_metrics': part_metrics if track_metrics else {},
               'recovery_budget_remaining': remaining_recoveries,
               'policy_calls': sum(s['policy_calls'] for s in graph_states.values()),
-              'policy_kind': 'openai_responses' if live_pair else 'scripted', 'api_calls': ledger.model_requests if ledger else 0,
-              **({'part_episodes': part_episodes, 'llm_usage': ledger.summary() if ledger else None} if live_pair else {}),
+              'policy_kind': 'openai_responses' if live else 'scripted', 'api_calls': ledger.model_requests if ledger else 0,
+              **({'part_episodes': part_episodes, 'final_verification': final_verification,
+                  'llm_usage': ledger.summary() if ledger else None} if live else {}),
               'wall_elapsed_s': time.monotonic() - wall_started}
     write_json(recorder.run_dir / 'result.json', result)
     print(f'{status}: {recorder.run_dir}', flush=True)
@@ -252,6 +310,7 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--parts', type=int, choices=range(2, 11), default=6)
+    parser.add_argument('--llm-config', type=Path, help='Live single-policy numeric grasps for all requested frame components')
     parser.add_argument('--post-sleeve-llm-config', type=Path, help='Live post then sleeve in one initially empty fixture (--parts 3 --mode single)')
     parser.add_argument('--snapshots', action='store_true')
     parser.add_argument('--transport-strategy', choices=['direct', 'direct_then_rrt'], default='direct')
@@ -266,5 +325,6 @@ if __name__ == '__main__':
     result = execute_trial(product_count=args.parts, snapshots=args.snapshots, mode=args.mode, scenario=args.scenario,
         show_viewer=args.viewer, transport_strategy=args.transport_strategy, transfer_obstacle=args.transfer_obstacle,
         empty_approach_strategy=args.empty_approach_strategy, transport_replan_budget=args.transport_replan_budget,
-        planner_candidate=args.planner_candidate, post_sleeve_llm_config=args.post_sleeve_llm_config)
+        planner_candidate=args.planner_candidate, post_sleeve_llm_config=args.post_sleeve_llm_config,
+        llm_config=args.llm_config)
     raise SystemExit(0 if result['status'] == 'success' else 1)
