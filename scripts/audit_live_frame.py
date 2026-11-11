@@ -8,10 +8,44 @@ from collections import defaultdict
 from pathlib import Path
 
 
-def audit(run_dir):
+def audit_search(folder, part, state, phase):
+    from run_frame_assembly import verify_interference_recovery
+    verify_interference_recovery(state, phase['executed_approach'])
+    recovery = folder/'grasp_recovery'/part
+    def read(relative):
+        return json.loads((recovery/relative).read_text(encoding='utf-8'))
+    receipt = read('decision_receipt.json')
+    selector = read('selector/result.json')
+    assert selector['transport'] == 'openai_responses' and selector['status'] == 'selected'
+    assert receipt == state['grasp_recovery_receipt'] and receipt['selected_id'] == selector['selected_id']
+    assert read('evaluation.json')['proposal']['code_sha256'] == receipt['code_sha256']
+    assert selector['API_calls'] == receipt['API_calls'] == len(selector['events'])
+    read_ids, hits = set(), set()
+    for i, event in enumerate(selector['events'], 1):
+        response = read(f'selector/response_{i}.json')
+        calls = [item for item in response['output'] if item['type'] == 'function_call']
+        assert response['status'] == 'completed' and len(calls) == 1
+        assert calls[0]['name'] == event['tool'] and json.loads(calls[0]['arguments']) == event['arguments']
+        if event['tool'] == 'search_library':
+            hits.update(card['document_id'] for card in event['results'])
+        elif event['tool'] == 'read_documents':
+            ids = event['arguments']['document_ids']
+            assert set(ids) <= hits
+            read_ids.update(ids)
+        else:
+            assert i == len(selector['events']) and event['tool'] == 'select_skill'
+            assert event['arguments']['document_id'] == receipt['selected_id'] in read_ids
+    assert read('trial_01/source_before.json') == read('trial_01/source_after.json') == read('trial_02/source_before.json') == read('trial_02/source_after.json')
+    assert read('trial_01/trial.json')['accepted'] is False and read('trial_02/trial.json')['accepted'] is True
+    print(part, 'verified recovery', receipt['selected_id'], receipt['proposed_grasp'], 'calls', selector['API_calls'])
+    return selector['API_calls']
+
+
+def audit(run_dir, *, planner_candidate=None):
     if not __debug__:
         raise RuntimeError('Run the audit without -O or PYTHONOPTIMIZE; checks must stay enabled.')
     root = Path(__file__).resolve().parents[1]
+    sys.path.insert(0,str(root/'scripts'))
     folder = Path(run_dir)
     r = json.loads((folder/'result.json').read_text(encoding='utf-8'))
     c = json.loads((folder/'resolved_config.json').read_text(encoding='utf-8'))
@@ -21,7 +55,17 @@ def audit(run_dir):
         for name,state in r['graph_states'].items():
             print(name, state['status'], [(x['grasp'],x['accepted'],x.get('phase'),x.get('failure_code')) for x in state['grasp_trials']])
         sys.exit(1)
-    expected=[*(f'post_{i}' for i in range(1,5)),*(f'sleeve_{i}' for i in range(1,5)),'cover']
+    sleeve_names = [f'sleeve_{i}' for i in range(1,5)]
+    default_order = [*(f'post_{i}' for i in range(1,5)),*sleeve_names,'cover']
+    expected = default_order
+    if c.get('planner_provenance') is not None or planner_candidate is not None:
+        from planner_candidate_input import load_robot_candidate
+        if planner_candidate is None:
+            raise ValueError('Supply the original --planner-candidate to audit this external-plan run.')
+        expected, provenance = load_robot_candidate(planner_candidate, c['registry'])
+        assert c['planner_provenance'] == r['planner_provenance'] == provenance
+        assert expected == list(reversed(provenance['disassembly_order'])) == r['requested_sequence']
+        assert provenance['fixed_base'] == 'base' and set(expected) == set(default_order)
     assert r['execution_order']==expected and r['robot_installed_parts']==9 and r['ten_part_assembly_complete']
     assert c['sequence']==expected and c['policy_kind']=='openai_responses'
     assert r.get('resume') is None, 'This audit requires a fresh episode without checkpoint resume.'
@@ -29,10 +73,14 @@ def audit(run_dir):
     assert c.get('completion_protocol')=='physics_verifier'
     assert (folder/'before_assembly.png').stat().st_size>1000
     validated=[e for line in (folder/'llm_events.jsonl').read_text(encoding='utf-8').splitlines() if (e:=json.loads(line))['event']=='proposal_validated']
-    assert len(validated)==r['api_calls']
+    fixed_trigger = c.get('fixed_first_grasp_trigger') is True
+    search_calls = (audit_search(folder, 'post_1', r['graph_states']['post_1'], r['part_episodes']['post_1'])
+                    if fixed_trigger else 0)
+    assert len(validated)+search_calls==r['api_calls']
     assert all(e['response_id'] and e['summary']['requested_model']==c['llm_config']['model'] for e in validated)
     assert r['llm_usage']['unknown_usage_requests']==0
-    assert r['api_calls']==r['policy_calls']<=c['llm_config']['max_model_requests']
+    assert len(validated)+int(fixed_trigger)==r['policy_calls']
+    assert r['api_calls']<=c['llm_config']['max_model_requests']
     assert r['llm_usage']['known_api_cost_estimate_usd']<=float(c['llm_config']['max_cost_usd'])
     assert r['llm_usage']['input_tokens']+r['llm_usage']['output_tokens']<=c['llm_config']['max_total_tokens']
     previous=None
@@ -52,8 +100,12 @@ def audit(run_dir):
         assert approved['grasp']==phase['executed_approach']['proposed_grasp']
         responses=[e['proposal'] for e in validated if e['proposal']['part_id']==name]
         picks=[p for p in responses if p['skill']=='pick']
-        assert len(responses)==phase['api_calls_at_end']-phase['api_calls_at_start']
-        assert picks[-1]['grasp']==approved['grasp']
+        recovered = fixed_trigger and name == 'post_1'
+        assert len(responses)+(search_calls if recovered else 0)==phase['api_calls_at_end']-phase['api_calls_at_start']
+        if recovered:
+            assert approved['grasp']==state['grasp_recovery_receipt']['proposed_grasp']
+        else:
+            assert picks[-1]['grasp']==approved['grasp']
         if c.get('completion_protocol')=='physics_verifier':
             assert responses[-1]['skill']=='insert'
             assert state['completion_source']=='physics_verifier'
@@ -73,7 +125,6 @@ def audit(run_dir):
     assert final['boundary']==previous['end'] and final['all_installed_parts_preserved']
     if c.get('completion_protocol')=='physics_verifier':
         assert r['terminal_checkpoint']==final['boundary'] and r['checkpoint_error'] is None
-    sys.path.insert(0,str(root/'scripts'))
     from frame_assembly_scene import build_frame_scene
     from run_frame_assembly import restore_episode_data, episode_boundary
     model,_,registry=build_frame_scene(10)
@@ -87,12 +138,12 @@ def audit(run_dir):
     row=check.verifier.sample(restored,check.motion.reference,allow_support=True,allow_grasp=False)
     fresh=check.insertion_evidence([row])
     assert all(fresh['checks'].values()) and fresh['cover_fit']==final['terminal']['cover_fit']
-    for name in expected[4:8]:
+    for name in sleeve_names:
         sleeve_check=FrameSkills(model,restored,name,registry,set(expected))
         assert sleeve_check.verify_sleeve_fit()==final['sleeve_fits'][name]
     assert episode_boundary(model,restored,registry,set(expected))==final['boundary']
     print('Restored-state independent physical cover and sleeve checks passed without motion.')
-    assert set(final['sleeve_fits'])==set(expected[4:8])
+    assert set(final['sleeve_fits'])==set(sleeve_names)
     assert len(final['terminal']['cover_fit']['bores'])==4
     for fit in [*final['sleeve_fits'].values(),*final['terminal']['cover_fit']['bores'].values()]:
         assert fit['minimum_bore_side_clearance_mm']>0 and fit['minimum_post_extension_past_openings_mm']>0
@@ -133,4 +184,6 @@ def audit(run_dir):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('run_dir', type=Path, help='A completed fresh live frame run with snapshots')
-    audit(parser.parse_args().run_dir)
+    parser.add_argument('--planner-candidate', type=Path, help='Native candidate and adjacent source artifacts to recheck')
+    args = parser.parse_args()
+    audit(args.run_dir, planner_candidate=args.planner_candidate)

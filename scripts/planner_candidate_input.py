@@ -59,6 +59,8 @@ def load_robot_candidate(path, registry):
             raise ValueError('Planner world/CAD/body frames differ from the current robot targets.')
     provenance = {'kind': 'native_disassembly_candidate', 'candidate_sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
                   'source_report_sha256': candidate['source_report_sha256'], 'source_commit': report['source_commit'],
+                  'fixed_base': mapping['0'], 'disassembly_order_ids': list(report['stats']['sequence']),
+                  'disassembly_order': [mapping[index] for index in report['stats']['sequence']],
                   'candidate_constraints': report.get('candidate_constraints'), 'order': assessed['proposed_order'],
                   'candidate_is_not_robot_success': True}
     return assessed['proposed_order'], provenance

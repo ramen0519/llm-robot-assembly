@@ -21,7 +21,8 @@ def prepare_resume(folder, model, registry, config, options, restore, boundary):
     folder = Path(folder).resolve()
     parent = json.loads((folder / 'result.json').read_text(encoding='utf-8'))
     settings = json.loads((folder / 'resolved_config.json').read_text(encoding='utf-8'))
-    if (parent['status'] != 'stopped' or parent['error'] != 'Grasp proposal budget exhausted before pick.'
+    if (settings.get('planner_provenance') is not None or parent.get('planner_provenance') is not None
+            or parent['status'] != 'stopped' or parent['error'] != 'Grasp proposal budget exhausted before pick.'
             or settings['policy_kind'] != 'openai_responses' or settings['orchestration'] != 'single'
             or settings['llm_config'] != config.public() or settings['registry'] != json_safe(registry)
             or any(settings[key] != value for key, value in options.items())):

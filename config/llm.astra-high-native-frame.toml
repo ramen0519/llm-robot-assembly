@@ -1,0 +1,19 @@
+# Full native-plan episode: recovery search and all assembly proposals share one ledger.
+[llm]
+enabled = true
+provider = "openai"
+model = "gpt-6-astra"
+reasoning_effort = "high"
+api_key_env = "OPENAI_API_KEY"
+max_model_requests = 36
+max_input_tokens = 8000
+max_output_tokens = 2048
+max_total_tokens = 361728
+max_cost_usd = "1.50"
+input_usd_per_million = "10"
+output_usd_per_million = "50"
+cached_input_usd_per_million = "1"
+cache_write_30m_usd_per_million = "12.50"
+pricing_source = "https://developers.openai.com/api/docs/pricing"
+pricing_as_of = "2026-11-11"
+timeout_seconds = 180

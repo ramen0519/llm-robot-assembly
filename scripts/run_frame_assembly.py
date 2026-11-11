@@ -119,8 +119,10 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
         raise ValueError('The first-post interference case requires its verified library and ten-part scene.')
     if resume_run is not None and (llm_config is None or scenario != 'nominal'):
         raise ValueError('Resume requires the full live single-policy nominal frame.')
-    if llm_config is not None and (live_pair or mode != 'single' or policies is not None or planner_candidate is not None):
-        raise ValueError('The live frame requires single mode and one configuration with the built-in prerequisite order.')
+    if planner_candidate is not None and (target_parts is not None or resume_run is not None):
+        raise ValueError('An external plan requires a fresh episode executing its entire admitted order.')
+    if llm_config is not None and (live_pair or mode != 'single' or policies is not None):
+        raise ValueError('The live frame requires single mode and one model configuration.')
     if live_pair and (mode != 'single' or product_count != 3 or policies is not None or planner_candidate is not None):
         raise ValueError('The live post/sleeve cell requires 3 parts, single policy and its built-in prerequisite order.')
     if policies is not None and (mode == 'scripted' or not isinstance(policies, dict)
@@ -153,11 +155,12 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
             config = load_llm_config(post_sleeve_llm_config if live_pair else llm_config).validate(live=True)
         model, data, registry = build_frame_scene(product_count, transfer_obstacle=transfer_obstacle,
                                                  first_sleeve_cell=live_pair)
-        if planner_candidate is not None:
+        if planner_candidate is None:
+            sequence = installation_sequence(registry, target_parts)
+        else:
             from planner_candidate_input import load_robot_candidate
             order, planner_provenance = load_robot_candidate(planner_candidate, registry)
-            registry = {name: registry[name] for name in order}
-        sequence = installation_sequence(registry, target_parts)
+            sequence = installation_sequence(registry, order)
         if trigger and sequence[0] != 'post_1':
             raise ValueError('The interference scenario must start with post_1.')
         if grasp_skill_library is not None:
@@ -351,6 +354,8 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
                                                  api_calls_at_end=ledger.model_requests)
                     write_json(recorder.run_dir / 'progress.json', {
                         'status': 'running', 'resume': resume, 'completed_installations': sorted(installed),
+                        **({'planner_provenance': planner_provenance, 'requested_sequence': sequence}
+                           if planner_provenance is not None else {}),
                         'next_parts': [name for name in sequence if name not in installed],
                         'part_episodes': part_episodes, 'results': results, 'graph_states': graph_states,
                         'recovery_budget_remaining': remaining_recoveries,
@@ -398,6 +403,7 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
             terminal_checkpoint = None
             checkpoint_error = type(exc).__name__
     checkpoint = (terminal_checkpoint if status == 'stopped' and target_parts is None and grasp_skill_library is None
+                  and planner_candidate is None
                   and error == 'Grasp proposal budget exhausted before pick.' else None)
     segment_elapsed = time.monotonic() - wall_started
     result = {'status': status, 'error': error, 'run_dir': str(recorder.run_dir),
