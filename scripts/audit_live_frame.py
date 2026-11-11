@@ -76,7 +76,8 @@ def audit(run_dir, *, planner_candidate=None):
     fixed_trigger = c.get('fixed_first_grasp_trigger') is True
     search_calls = (audit_search(folder, 'post_1', r['graph_states']['post_1'], r['part_episodes']['post_1'])
                     if fixed_trigger else 0)
-    assert len(validated)+search_calls==r['api_calls']
+    memory_targets = c.get('sleeve_memory', {}).get('targets', [])
+    assert len(validated)+search_calls+len(memory_targets)==r['api_calls']
     assert all(e['response_id'] and e['summary']['requested_model']==c['llm_config']['model'] for e in validated)
     assert r['llm_usage']['unknown_usage_requests']==0
     assert len(validated)+int(fixed_trigger)==r['policy_calls']
@@ -101,7 +102,7 @@ def audit(run_dir, *, planner_candidate=None):
         responses=[e['proposal'] for e in validated if e['proposal']['part_id']==name]
         picks=[p for p in responses if p['skill']=='pick']
         recovered = fixed_trigger and name == 'post_1'
-        assert len(responses)+(search_calls if recovered else 0)==phase['api_calls_at_end']-phase['api_calls_at_start']
+        assert len(responses)+(search_calls if recovered else 0)+int(name in memory_targets)==phase['api_calls_at_end']-phase['api_calls_at_start']
         if recovered:
             assert approved['grasp']==state['grasp_recovery_receipt']['proposed_grasp']
         else:

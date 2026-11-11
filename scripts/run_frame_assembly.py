@@ -95,7 +95,7 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
                   transport_strategy='direct', transfer_obstacle=False, observer=None,
                   transport_replan_budget=0, empty_approach_strategy=None, policies=None, planner_candidate=None,
                   post_sleeve_llm_config=None, llm_config=None, resume_run=None,
-                  target_parts=None, grasp_skill_library=None):
+                  target_parts=None, grasp_skill_library=None, sleeve_memory=None, sleeve_memory_targets=None):
     trigger = scenario == 'first_post_grasp_interference'
     if mode not in ('scripted', 'single', 'roles') or scenario not in ('nominal', 'first_alignment_offset', 'first_post_grasp_interference'):
         raise ValueError('Unknown orchestration mode/scenario')
@@ -113,6 +113,10 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
         raise ValueError('Unknown empty-gripper approach strategy.')
     live_pair = post_sleeve_llm_config is not None
     live = live_pair or llm_config is not None
+    if sleeve_memory_targets is not None and sleeve_memory is None:
+        raise ValueError('Selecting memory targets requires a sleeve experience file.')
+    if sleeve_memory is not None and (llm_config is None or mode != 'roles' or resume_run is not None):
+        raise ValueError('Pre-grasp experience search requires a fresh live assembly-agent episode.')
     if (target_parts is not None or grasp_skill_library is not None) and (llm_config is None or resume_run is not None):
         raise ValueError('Targeted live assembly and grasp recovery require a fresh single-policy frame episode.')
     if trigger and (grasp_skill_library is None or product_count != 10):
@@ -143,6 +147,7 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
     part_episodes, final_verification = {}, None
     previous_end = None
     library, library_info, sequence = None, None, None
+    sleeve_record, search_targets = None, []
     parent, resume, segment_installed = None, None, []
     track_metrics = (live or transport_strategy != 'direct' or transfer_obstacle or transport_replan_budget
                      or empty_approach_strategy == 'direct_then_rrt')
@@ -165,6 +170,16 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
             sequence = installation_sequence(registry, order)
         if trigger and sequence[0] != 'post_1':
             raise ValueError('The interference scenario must start with post_1.')
+        if sleeve_memory is not None:
+            from sleeve_grasp_memory import load_experience
+            from sleeve_memory_policy import FirstGraspMemory
+            sleeve_record = load_experience(sleeve_memory)
+            search_targets = list(sleeve_memory_targets) if sleeve_memory_targets is not None else ['sleeve_2','sleeve_4']
+            if (not search_targets or len(set(search_targets)) != len(search_targets)
+                    or any(n not in sequence or registry[n]['kind'] != 'sleeve' or n == sleeve_record['source_part']
+                           for n in search_targets)):
+                raise ValueError('Search targets must be distinct target sleeves in the admitted plan.')
+            write_json(recorder.run_dir / 'sleeve_memory_source.json', sleeve_record)
         if grasp_skill_library is not None:
             from grasp_skill_library import SkillLibrary
             from grasp_preflight_trace import RecordedFrameSkills
@@ -212,6 +227,8 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
         write_json(recorder.run_dir / 'resolved_config.json', {
             'registry': registry, 'environment': 'simulation', 'observation_source': 'sim_ground_truth',
             'planner_provenance': planner_provenance,
+            **({'sleeve_memory': {'experience_id': sleeve_record['experience_id'], 'targets': search_targets}}
+               if sleeve_record is not None else {}),
             'product_parts_present': product_count, 'robot_installations_goal': len(sequence),
             **({'grasp_skill_library': library_info, 'fixed_first_grasp_trigger': trigger} if library else {}),
             'transport_strategy': transport_strategy, 'transfer_obstacle': transfer_obstacle,
@@ -233,7 +250,8 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
                              'assembly_skills.py', 'post_grasp.py', 'openai_policy.py', 'llm_runtime.py', 'insertion_recovery.py', 'frame_product.py',
                              'frame_resume.py', 'run_pick_place.py') + (('graph_grasp_recovery.py',
                              'grasp_skill_library.py', 'grasp_skill_runtime.py', 'grasp_skill_selector.py',
-                             'grasp_preflight_trace.py') if library else ())}})
+                             'grasp_preflight_trace.py') if library else ()) + (
+                             ('sleeve_grasp_memory.py','sleeve_memory_policy.py') if sleeve_record is not None else ())}})
         viewer_context = mujoco.viewer.launch_passive(model, data) if show_viewer else nullcontext(None)
         with viewer_context as viewer, recorder.trace_path.open('a' if resume else 'w', newline='', encoding='utf-8') as stream, (recorder.run_dir / 'graph_events.jsonl').open('a' if resume else 'w', encoding='utf-8') as events:
             clock = {'last_draw': -1., 'wall': time.monotonic(), 'sim': float(data.time)}
@@ -344,6 +362,8 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
                         scenario='alignment_offset' if scenario == 'first_alignment_offset' and active == 'post_1' else 'nominal',
                         recovery_budget=remaining_recoveries, on_event=event,
                         grasp_recovery=recovery,
+                        first_grasp_memory=(FirstGraspMemory(sleeve_record, recorder.run_dir/'memory_search'/active,
+                            recorder.run_dir.name) if active in search_targets else None),
                         transport_replan_budget=min(1, replans_at_part_start),
                         task_id='four_post_frame_wide/' + active, insert_result_skill=expected, propose_grasp=live, finish_on_verified_insert=live,
                         retry_history=parent['graph_states'][active] if resume and active == resume['active_part'] else None)
@@ -469,6 +489,8 @@ if __name__ == '__main__':
     parser.add_argument('--scenario', choices=['nominal', 'first_alignment_offset', 'first_post_grasp_interference'], default='nominal')
     parser.add_argument('--target-parts', nargs='+', help='Ordered installation goals in the unchanged full scene')
     parser.add_argument('--grasp-skill-library', type=Path, help='Frozen catalogue for measured first-post interference')
+    parser.add_argument('--sleeve-memory', type=Path, help='Verified sleeve experience to search before the first grasp')
+    parser.add_argument('--sleeve-memory-targets', nargs='+', help='Target sleeves for this search (default: sleeve_2 sleeve_4)')
     parser.add_argument('--planner-candidate', type=Path, help='Native candidate whose CAD, frames and evidence are rechecked before motion')
     args = parser.parse_args()
     result = execute_trial(product_count=args.parts, snapshots=args.snapshots, mode=args.mode, scenario=args.scenario,
@@ -476,5 +498,6 @@ if __name__ == '__main__':
         empty_approach_strategy=args.empty_approach_strategy, transport_replan_budget=args.transport_replan_budget,
         planner_candidate=args.planner_candidate, post_sleeve_llm_config=args.post_sleeve_llm_config,
         llm_config=args.llm_config, resume_run=args.resume_run, target_parts=args.target_parts,
-        grasp_skill_library=args.grasp_skill_library)
+        grasp_skill_library=args.grasp_skill_library, sleeve_memory=args.sleeve_memory,
+        sleeve_memory_targets=args.sleeve_memory_targets)
     raise SystemExit(0 if result['status'] == 'success' else 1)

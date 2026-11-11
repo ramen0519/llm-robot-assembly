@@ -33,7 +33,7 @@ def _turns(folder, result, config):
     totals = {role: Counter() for role in ('assembly', 'recovery')}
     llm = config['llm_config']
     for event in _rows(folder / 'llm_events.jsonl'):
-        if event['event'] in ('request_prepared', 'recovery_search_prepared'):
+        if event['event'] in ('request_prepared', 'recovery_search_prepared', 'sleeve_search_prepared'):
             turns.append([])
         _require(turns and event.get('agent_role') in totals, 'untagged or unowned journal event')
         turns[-1].append(event)
@@ -43,6 +43,10 @@ def _turns(folder, result, config):
         expected = ['request_prepared', 'input_count_started', 'input_count_completed', 'model_request_started',
                     'model_response_received', 'proposal_validated'] if normal else [
                     'recovery_search_prepared', 'input_count_started', 'model_request_started', 'model_response_received']
+        memory_search = names[0] == 'sleeve_search_prepared'
+        if memory_search:
+            expected = ['sleeve_search_prepared','input_count_started','input_count_completed','model_request_started',
+                        'model_response_received','sleeve_search_validated']
         role = turn[0]['agent_role']
         _require(names == expected and all(e['agent_role'] == role for e in turn), 'incomplete or cross-role model turn')
         events = {e['event']: e for e in turn}
@@ -53,10 +57,12 @@ def _turns(folder, result, config):
         seen.add(response_id)
         _require(start['model'] == llm['model'] and turn[0]['request_hash'] == turn[1]['request_hash'],
                  'configured model or counted request differs')
-        if normal:
+        if normal or memory_search:
             digest = hashlib.sha256(json.dumps(turn[0]['request'], sort_keys=True).encode()).hexdigest()
-            _require(response_id == events['proposal_validated']['response_id'] and
+            _require(response_id == turn[-1]['response_id'] and
                      start['request_hash'] == digest == turn[0]['request_hash'], 'proposal is not bound to provider turn')
+            if memory_search:
+                _require(role == 'assembly', 'first-grasp retrieval outside the assembly agent')
         else:
             _require(role == 'recovery', 'catalogue operation outside recovery agent')
         usage = response['usage']
@@ -118,7 +124,31 @@ def _selector(folder, handoff, receipt, turns):
     _require(all(original[k] == v for k, v in handoff['proof']['source_state'].items()), 'changed original scene at transfer')
 
 
-def _graph_part(folder, part, state, phase, rows, turns, fixed):
+def audit_first_grasp_search(folder, part, revision, turn, next_request, memory_id):
+    from sleeve_grasp_memory import retrieve_experience
+    receipt = _json(folder/'memory_search'/part/'retrieval.json')
+    origin = _json(folder/'sleeve_memory_source.json')
+    _require(turn[0]['event'] == 'sleeve_search_prepared' and origin['experience_id'] == memory_id,
+             'expected the selected sleeve experience and a distinct search call')
+    query = json.loads(turn[0]['request']['input'])
+    verified = turn[-1]
+    _require(verified['event'] == 'sleeve_search_validated' and verified['agent_role'] == 'assembly'
+             and receipt['search_text'] == verified['query_text'] == json.loads(verified['tool_call']['arguments'])['query'].strip()
+             and verified['tool_call']['name'] == 'search_sleeve_experience'
+             and verified['response_id'] == receipt['response_id']
+             and receipt['initial_query']['episode_id'] == receipt['episode_id'] == folder.name
+             and query['part_id'] == receipt['part_id'] == part == next_request['part_id'] == receipt['initial_query']['part_id']
+             and receipt['observation_revision'] == revision == query['observation_revision'] == next_request['observation_revision']
+             and query['geometry'] == next_request['grasp_task']['geometry'] and next_request['grasp_task']['previous_trials'] == [],
+             'sleeve search not bound to this first decision')
+    hit = retrieve_experience(origin, receipt['initial_query'], search_text=receipt['search_text'])
+    cards = [hit] if hit else []
+    _require(receipt['cards'] == next_request['experiences'] == cards and
+             receipt['experience_ids'] == [c['record_id'] for c in cards] and receipt['status'] == ('hit' if hit else 'miss'),
+             'retrieved experience differs from the assembly prompt')
+
+
+def _graph_part(folder, part, state, phase, rows, turns, fixed, memory_id=None):
     owner, handoffs, checked = 'assembly', [], []
     verified_pick = False
     authorized = None
@@ -171,11 +201,16 @@ def _graph_part(folder, part, state, phase, rows, turns, fixed):
                          and action['grasp'] == {'x_mm': 0, 'y_mm': 0, 'z_mm': 1, 'jaw_yaw_deg': 0},
                          'unbilled fixture differs from declared development trigger')
                 continue
+            search_turn = next(turns) if memory_id and not checked else None
             turn = next(turns)
             _require(turn[0]['event'] == 'request_prepared' and turn[0]['agent_role'] == owner and
                      turn[-1]['proposal'] == action, 'validated proposal differs from executing graph decision')
             request = turn[0]['request']
             packet = json.loads(request['input'])
+            if search_turn is not None:
+                audit_first_grasp_search(folder, part, rev, search_turn, packet, memory_id)
+                _require(row['experience_ids'] == [c['record_id'] for c in packet['experiences']],
+                         'graph experience IDs differ from memory-assisted decision')
             _require(packet['part_id'] == part and packet['active_role'] == owner
                      and packet['observation_revision'] == rev == action['observation_revision']
                      and action['skill'] in packet['allowed_skills'] and f'You are the {owner} agent.' in request['instructions'],
@@ -225,7 +260,9 @@ def audit_agent_handoffs(folder, result, config):
     _require([p for p, _ in blocks] == result['execution_order'] == config['sequence'] and blocks[0][0] == 'post_1',
              'graph events out of physical installation order')
     try:
-        counts = {p: _graph_part(folder, p, result['graph_states'][p], result['part_episodes'][p], rows, turns, p == 'post_1')
+        memory = config.get('sleeve_memory', {})
+        counts = {p: _graph_part(folder, p, result['graph_states'][p], result['part_episodes'][p], rows, turns, p == 'post_1',
+                                 memory['experience_id'] if p in memory.get('targets', []) else None)
                   for p, rows in blocks}
     except StopIteration as exc:
         raise ValueError('Role audit: required graph decision lacks provider evidence.') from exc

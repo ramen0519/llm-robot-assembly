@@ -15,6 +15,9 @@ class DevelopmentFirstGrasp:
         self.policy = policy
         self.used = False
 
+    def search_before_grasp(self, context):
+        return self.policy.search_before_grasp(context)
+
     def propose(self, context):
         if (not self.used and context['part_id'] == 'post_1' and context['completed'] == []
                 and 'pick' in context['allowed_skills'] and context.get('grasp_task', {}).get('previous_trials') == []):

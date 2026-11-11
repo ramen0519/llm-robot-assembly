@@ -67,9 +67,14 @@ def _repairable_grasp(trial):
 
 def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, on_event=None,
                        scenario='nominal', recovery_budget=1, memory_lookup=None,
-                       task_id='four_post_frame_first_joint/v1', insert_result_skill='insert_post/v1', condition_fingerprint=None, transport_replan_budget=0, recipe_summaries=None, propose_grasp=False, retry_history=None, finish_on_verified_insert=False, grasp_recovery=None):
+                       task_id='four_post_frame_first_joint/v1', insert_result_skill='insert_post/v1', condition_fingerprint=None, transport_replan_budget=0, recipe_summaries=None, propose_grasp=False, retry_history=None, finish_on_verified_insert=False, grasp_recovery=None,
+                       first_grasp_memory=None, first_grasp_only=False):
     from post_grasp import MAX_PROPOSALS
     prior = deepcopy(retry_history)
+    if (first_grasp_only or first_grasp_memory is not None) and (not propose_grasp or prior is not None):
+        raise ValueError('A first-grasp decision requires a fresh proposed-grasp graph.')
+    if first_grasp_memory is not None and mode != 'roles':
+        raise ValueError('Sleeve experience search belongs to the assembly agent.')
     if prior is not None and (mode != 'single' or not propose_grasp or scenario != 'nominal'
             or prior.get('status') != 'stopped' or prior.get('error') != 'Grasp proposal budget exhausted before pick.'
             or prior.get('completed') != [] or len(prior.get('grasp_trials', [])) != MAX_PROPOSALS
@@ -189,8 +194,10 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
                         if grasp_recovery is not None else state['grasp_trials'])
             context['grasp_task'] = {'geometry': skills.grasp_geometry(), 'previous_trials': previous,
                                      'attempts_remaining': trial_limit - len(state['grasp_trials'])}
+            if first_grasp_memory is not None and role == 'assembly' and not previous and not state['completed']:
+                context['experiences'] = first_grasp_memory.before_proposal(skills, deepcopy(context), policies[role])
         proposal = validate_proposal(policies[role].propose(deepcopy(context)), context)
-        return {'action': proposal, 'policy_calls': state['policy_calls'] + 1,
+        return {'action': proposal, 'policy_calls': state['policy_calls'] + 1, 'experiences': context['experiences'],
                 'last_result': None, 'verification': None}
 
     def check_grasp(state):
@@ -207,6 +214,10 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
                     or trial['observation_revision'] != state['observation_revision']):
                 raise ValueError('Adapter check returned a mismatched grasp or observation revision.')
         trials = [*state['grasp_trials'], trial]
+        if first_grasp_only:
+            if len(trials) != 1 or type(trial.get('accepted')) is not bool:
+                raise ValueError('Expected exactly one completed preflight.')
+            return {'grasp_trials': trials, 'status': 'first_grasp_checked'}
         if role_handoff and not trial['accepted']:
             if not _repairable_grasp(trial):
                 return {'grasp_trials': trials, 'status': 'failed',

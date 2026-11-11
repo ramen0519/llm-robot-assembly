@@ -83,6 +83,10 @@ def build_request(config, context, *, role='single'):
         if packet['grasp_task']['previous_trials']:
             grasp_instruction += (' The scene has been re-observed. For a rejected grasp, change at least one '
                                   'geometrically relevant parameter based on the contact evidence, or stop.')
+        if any('source_part' in card and 'repair' in card for card in packet['experiences']):
+            grasp_instruction += (' You searched for experiences before this first proposal. In your reason identify '
+                                  'the source part and explain how its observation informed your choice, or why you '
+                                  'did not apply it. Select the parameters for the present geometry and observation.')
     role_prompt = ROLE_INSTRUCTIONS['single'] if role == 'single' else LIVE_ROLE_INSTRUCTIONS[role]
     request = {'model': config.model,
                'instructions': POLICY_INSTRUCTIONS + '\n' + role_prompt + grasp_instruction,
@@ -98,7 +102,7 @@ def build_request(config, context, *, role='single'):
     return request
 
 
-def parse_proposal(response, context):
+def _tool_arguments(response, name):
     if response.get('status') != 'completed' or response.get('error') is not None:
         raise ValueError('The model response did not complete.')
     output = response.get('output')
@@ -108,7 +112,7 @@ def parse_proposal(response, context):
     if any(item.get('type') not in ('function_call', 'reasoning') for item in output) or len(calls) != 1:
         raise ValueError('Need exactly one function proposal; text/refusal/other tools are not executable.')
     call = calls[0]
-    if call.get('name') != 'propose_assembly_action' or call.get('status') not in (None, 'completed'):
+    if call.get('name') != name or call.get('status') not in (None, 'completed'):
         raise ValueError('Unexpected/incomplete function call.')
     arguments = call.get('arguments')
     if not isinstance(arguments, str) or len(arguments) > 8192:
@@ -122,8 +126,11 @@ def parse_proposal(response, context):
         return result
     def invalid_constant(value):
         raise ValueError('Non-finite JSON constant.')
-    value = json.loads(arguments, object_pairs_hook=no_duplicate_keys, parse_constant=invalid_constant)
-    return validate_proposal(value, context)
+    return json.loads(arguments, object_pairs_hook=no_duplicate_keys, parse_constant=invalid_constant)
+
+
+def parse_proposal(response, context):
+    return validate_proposal(_tool_arguments(response, 'propose_assembly_action'), context)
 
 
 LIVE_ROLE_INSTRUCTIONS = {
@@ -155,9 +162,43 @@ class OpenAIAssemblyPolicy:
 
     def _propose(self, context):
         request = build_request(self.config, context, role=self.role)
+        body = self._call_model(request, 'request_prepared')
+        try:
+            proposal = parse_proposal(body, context)
+        except (ValueError, TypeError, KeyError, AttributeError, FailureEvent):
+            self.ledger.halted = True
+            self.ledger.record('proposal_rejected', response_id=body.get('id'), summary=self.ledger.summary())
+            raise FailureEvent(FailureCode.POLICY_RESPONSE_INVALID, 'No valid current-state action in the model response; no physical command issued.', phase='policy/validation') from None
+        self.ledger.record('proposal_validated', response_id=body.get('id'), proposal=proposal, summary=self.ledger.summary())
+        return proposal
+
+    def search_before_grasp(self, context):
+        if (self.role != 'assembly' or context.get('active_role') != self.role or context['completed']
+                or context['grasp_task']['previous_trials'] or 'pick' not in context['allowed_skills']):
+            raise ValueError('Only the assembly agent can search before its first grasp.')
+        from sleeve_memory_policy import search_request
+        with self.ledger.agent_turn(self.role):
+            body = self._call_model(search_request(self.config, context), 'sleeve_search_prepared')
+            try:
+                args = _tool_arguments(body, 'search_sleeve_experience')
+                if (type(args) is not dict or set(args) != {'query'} or type(args['query']) is not str
+                        or not 1 <= len(args['query'].strip()) <= 256):
+                    raise ValueError('Invalid search text.')
+            except (ValueError, TypeError, KeyError, AttributeError):
+                self.ledger.halted = True
+                self.ledger.record('sleeve_search_invalid', response_id=body.get('id'))
+                raise FailureEvent(FailureCode.POLICY_RESPONSE_INVALID, 'Invalid sleeve experience search.',
+                                   phase='policy/validation') from None
+            query = args['query'].strip()
+            tool_call = next(item for item in body['output'] if item.get('type') == 'function_call')
+            self.ledger.record('sleeve_search_validated', response_id=body['id'], query_text=query,
+                               tool_call=tool_call)
+            return query, body['id']
+
+    def _call_model(self, request, prepared_event):
         request_hash = hashlib.sha256(json.dumps(request, sort_keys=True).encode()).hexdigest()
         ledger = self.ledger
-        ledger.record('request_prepared', request_hash=request_hash, request=request)
+        ledger.record(prepared_event, request_hash=request_hash, request=request)
         ledger.begin_count(request_hash)
         started = time.monotonic()
         try:
@@ -191,14 +232,7 @@ class OpenAIAssemblyPolicy:
             ledger.halted = True
             ledger.record('usage_unresolved', summary=ledger.summary())
             raise FailureEvent(FailureCode.POLICY_USAGE_UNKNOWN, 'Missing, unsupported or inconsistent usage; stop for reconciliation.', phase='policy/usage') from None
-        try:
-            proposal = parse_proposal(body, context)
-        except (ValueError, TypeError, KeyError, AttributeError, FailureEvent):
-            ledger.halted = True
-            ledger.record('proposal_rejected', response_id=body.get('id'), summary=ledger.summary())
-            raise FailureEvent(FailureCode.POLICY_RESPONSE_INVALID, 'No valid current-state action in the model response; no physical command issued.', phase='policy/validation') from None
-        ledger.record('proposal_validated', response_id=body.get('id'), proposal=proposal, summary=ledger.summary())
-        return proposal
+        return body
 
 
 class OpenAIRecoveryAgent(OpenAIAssemblyPolicy):
