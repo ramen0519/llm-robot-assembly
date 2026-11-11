@@ -118,7 +118,7 @@ class NativeLiveFrameTests(unittest.TestCase):
                 skills.assert_not_called()
 
     def test_overrides_or_mixed_policy_stop_before_admission(self):
-        for options in ({'target_parts': ['post_1']}, {'resume_run': self.root}, {'mode': 'roles'},
+        for options in ({'target_parts': ['post_1']}, {'resume_run': self.root}, {'mode': 'scripted'},
                         {'policies': {'single': object()}},
                         {'llm_config': None, 'post_sleeve_llm_config': Path('offline-pair.toml')}):
             with self.subTest(options=options), patch.object(frame, 'build_frame_scene') as build, \

@@ -1,5 +1,6 @@
 """Explicit configuration and per-episode accounting for serial model requests."""
 from dataclasses import asdict, dataclass
+from contextlib import contextmanager
 from decimal import Decimal
 import json
 import math
@@ -116,9 +117,37 @@ class ApiLedger:
         self.reserved_tokens = 0
         self.unknown_requests = 0
         self.halted = False
+        self.current_agent = None
+        self.agent_usage = {}
+
+    @contextmanager
+    def agent_turn(self, role):
+        """Attribute serial decisions without creating a second budget or client."""
+        if role not in ('assembly', 'recovery') or self.current_agent is not None:
+            raise ValueError('Expected a single active assembly or recovery agent.')
+        def counters():
+            return {'api_calls': self.model_requests, 'input_tokens': self.input_tokens,
+                    'output_tokens': self.output_tokens, 'reasoning_tokens': self.reasoning_tokens,
+                    'unknown_usage_requests': self.unknown_requests,
+                    'known_api_cost_estimate_usd': self.known_cost}
+        before = counters()
+        self.current_agent = role
+        try:
+            yield
+        finally:
+            self.current_agent = None
+            total = self.agent_usage.setdefault(role, dict.fromkeys(before, 0))
+            for key, value in counters().items():
+                total[key] += value - before[key]
+
+    def agent_totals(self):
+        return {role: {**row, 'known_api_cost_estimate_usd': float(row['known_api_cost_estimate_usd'])}
+                for role, row in self.agent_usage.items()}
 
     def record(self, event, **data):
         row = {'timestamp_utc': utc_now(), 'event': event, **data}
+        if self.current_agent is not None:
+            row['agent_role'] = self.current_agent
         with self.path.open('a', encoding='utf-8') as stream:
             stream.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + '\n')
             stream.flush()

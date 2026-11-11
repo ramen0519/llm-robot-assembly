@@ -27,12 +27,13 @@ class DevelopmentFirstGrasp:
 
 class GraphGraspRecovery:
     """Records checks and produces a candidate. The graph owns every original-scene robot command."""
-    def __init__(self, library, config, client, ledger, log_dir, episode_id):
+    def __init__(self, library, config, client, ledger, log_dir, episode_id, *, recovery_agent=None):
         self.library, self.config, self.client, self.ledger = library, config, client, ledger
         self.snapshot_id = library.snapshot_id
         self.folder = Path(log_dir)
         self.folder.mkdir(parents=True, exist_ok=False)
         self.episode_id = episode_id
+        self.recovery_agent = recovery_agent
         self.rejection = None
         self.expected = None
         self.check_count = 0
@@ -92,9 +93,16 @@ class GraphGraspRecovery:
         part = context['part']['id']
         query = build_reuse_query(f'Install {part} in {context["target"]["id"]}.', current, self.rejection,
                                   part_kind=skills.registry[part]['kind'])
+        if self.recovery_agent is not None:
+            if state['active_role'] != 'recovery':
+                raise ValueError('The recovery agent does not own this rejection.')
+            query['handoff'] = state['agent_handoffs'][-1]
         _write_json(self.folder / 'selection_query.json', query)
-        decision = select_skill(query, self.library, config=self.config, client=self.client,
-                                shared_ledger=self.ledger, log_dir=self.folder / 'selector')
+        if self.recovery_agent is None:
+            decision = select_skill(query, self.library, config=self.config, client=self.client,
+                                    shared_ledger=self.ledger, log_dir=self.folder / 'selector')
+        else:
+            decision = self.recovery_agent.select_skill(query, self.library, log_dir=self.folder / 'selector')
         if (self.library.snapshot_id != self.snapshot_id or decision.get('snapshot_id') != self.snapshot_id
                 or reader() != current or source_state(skills) != before):
             raise ValueError('Scene or library changed during search.')
@@ -103,6 +111,8 @@ class GraphGraspRecovery:
                    'rejection_id': self.rejection['rejection_id'], 'failure_phase': query['failure_phase'],
                    'selected_id': decision['selected_id'], 'selection_status': decision['status'],
                    'API_calls': decision['API_calls'], 'tools': [event['tool'] for event in decision['events']]}
+        if self.recovery_agent is not None:
+            receipt['agent_role'] = 'recovery'
         _write_json(self.folder / 'selection_receipt.json', receipt)
         if decision['status'] == 'abstained':
             return {'status': 'abstained', 'reason': decision['reason'][:512], 'receipt': receipt}

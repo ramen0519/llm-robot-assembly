@@ -5,7 +5,7 @@
 - Read `README.md` and the relevant sections of `docs/PROJECT_PLAN.md` before implementation.
 - Build a working MuJoCo simulation before connecting real hardware.
 - Keep the final target near 10 product parts; smaller assemblies are development milestones.
-- Start with one arm and a single LangGraph LLM policy. Role-separated scripted policies are an offline test harness; actual multi-agent LLM implementation and fine-tuning are deferred. Keep the planned assembly/recovery role comparison behind the same executor, observations, tools and total budget.
+- Use one arm. Preserve the single LangGraph LLM policy and the optional assembly/recovery agent pair behind the same executor, observations, tools and shared episode budget. Label live calls, archived decisions and scripted tests by their actual source. Fine-tuning is deferred.
 - Coordinate agents with ordinary graph code and serialize robot commands through one executor and verifier. First compare single/multi assembly control with the same model, tools, observations, knowledge and total system budget; keep the external planning module/output fixed.
 - Treat the laboratory presentation as reference material, not as user-authored code or proof that reusable code is available.
 - UR3 and UR3e are distinct. The presentation names UR3e; verify the selected physical robot before fixing the model.

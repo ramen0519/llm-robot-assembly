@@ -32,6 +32,8 @@ class AssemblyState(TypedDict):
     grasp_recovery_due: bool
     grasp_recovery_attempts: int
     grasp_recovery_receipt: dict | None
+    agent_handoffs: list[dict]
+    verified_recovery_pick: dict | None
 
 
 def _compact_trial(trial):
@@ -42,6 +44,25 @@ def _compact_trial(trial):
         compact['trace_summary'] = {key: summary[key] for key in ('pick_completed', 'trace_complete', 'sample_count')
                                     if key in summary}
     return compact
+
+
+def _handoff_scene(skills):
+    from grasp_candidate_preflight import source_state
+    original = source_state(skills)
+    return {key: original[key] for key in ('simulation_time_s', 'integration_sha256', 'model_sha256', 'host_sha256')}
+
+
+def _repairable_grasp(trial):
+    if trial.get('source') != 'mujoco_preflight_copy' or not trial.get('phase'):
+        return False
+    if trial['phase'] == 'grasp_bounds':
+        return trial.get('failure_code') == 'INPUT_OR_PRECONDITION_INVALID'
+    return trial.get('failure_code') in {
+        'IK_NOT_CONVERGED', 'MOTION_PATH_NOT_FOUND', 'PLANNED_CONTACT', 'UNEXPECTED_CONTACT',
+        'MOTION_LIMIT_EXCEEDED', 'TCP_NOT_REACHED', 'GRIPPER_STATE_INVALID', 'GRASP_NOT_CONFIRMED',
+        'PART_LOST', 'ALIGNMENT_OUT_OF_TOLERANCE', 'INSERTION_DEPTH_NOT_REACHED',
+        'INSERTION_CONTACT_LIMIT', 'PLACEMENT_NOT_CONFIRMED',
+    }
 
 
 def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, on_event=None,
@@ -76,6 +97,9 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
                'verification': None, 'failures': [], 'pending_failure': None, 'recoveries': 0, 'transport_replans': 0,
                'policy_calls': 0, 'policy_mode': mode, 'error': None, 'experiences': [], 'grasp_trials': [], 'completion_source': None}
     fault_injected = False
+    role_handoff = mode == 'roles' and propose_grasp and finish_on_verified_insert
+    if role_handoff:
+        initial.update(agent_handoffs=[], verified_recovery_pick=None)
     if grasp_recovery is not None:
         if not propose_grasp or not all(callable(getattr(grasp_recovery, key, None)) for key in ('check', 'eligible', 'recover')):
             raise ValueError('Grasp recovery requires proposed grasps and a check/eligible/recover adapter.')
@@ -93,21 +117,49 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
             skills.settle()
         return {}
 
+    def transfer(state, update, to, proof):
+        record = {'from': state['active_role'], 'to': to, 'part_id': skills.config['part']['id'],
+                  'observation_revision': update['observation_revision'], 'proof': proof}
+        update.update(active_role=to, agent_handoffs=[*state['agent_handoffs'], record])
+
     def observe(state):
         experiences = memory_lookup(state['pending_failure']) if memory_lookup else []
         if not isinstance(experiences, list) or len(experiences) > 3:
             raise ValueError('Memory lookup must return at most three experience summaries.')
         update = {'observation': _snapshot(skills), 'observation_revision': state['observation_revision'] + 1,
                   'experiences': json_safe(experiences), 'active_role': 'recovery' if state['pending_failure'] else 'assembly'}
+        if role_handoff and state['agent_handoffs'] and state['agent_handoffs'][-1]['to'] == 'recovery':
+            update['active_role'] = 'recovery'
+        if role_handoff and state.get('verified_recovery_pick') is not None:
+            proof = state['verified_recovery_pick']
+            if (state['active_role'] != 'recovery' or state['completed'] != ['pick']
+                    or state['agent_handoffs'][-1]['to'] != 'recovery'
+                    or proof['source_state'] != _handoff_scene(skills)):
+                raise ValueError('Verified recovery pick changed before transfer to assembly.')
+            transfer(state, update, 'assembly', proof)
+            update['verified_recovery_pick'] = None
         if grasp_recovery is not None:
             update['grasp_recovery_due'] = False
             trials = state['grasp_trials']
             if (trials and trials[-1]['accepted'] is False and not state['completed'] and not state['pending_failure']
-                    and state['grasp_recovery_attempts'] == 0 and len(trials) < trial_limit):
+                    and state['grasp_recovery_attempts'] == 0 and len(trials) < trial_limit
+                    and (not role_handoff or not state['agent_handoffs'])):
                 eligible = grasp_recovery.eligible(skills, deepcopy({**state, **update}))
                 if type(eligible) is not bool:
                     raise ValueError('Expected a boolean grasp recovery eligibility result.')
                 update['grasp_recovery_due'] = eligible
+        if (role_handoff and state['grasp_trials'] and not state['completed'] and not state['pending_failure']
+                and state['grasp_trials'][-1]['accepted'] is False and not state['agent_handoffs']):
+            rejected = state['grasp_trials'][-1]
+            if (state['active_role'] != 'assembly' or not _repairable_grasp(rejected)
+                    or rejected['observation_revision'] >= update['observation_revision']):
+                raise ValueError('Recovery transfer requires a current, repairable preflight rejection.')
+            method = 'verified_skill_search' if update.get('grasp_recovery_due') else 'numeric_grasp_revision'
+            transfer(state, update, 'recovery', {
+                'kind': 'rejected_preflight', 'accepted': False, 'recovery_method': method,
+                'failure_code': rejected['failure_code'], 'phase': rejected['phase'],
+                'rejected_grasp': rejected['grasp'], 'rejected_revision': rejected['observation_revision'],
+                'source_state': _handoff_scene(skills)})
         return update
 
     def decide(state):
@@ -128,6 +180,10 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
                        transport_replans=state['transport_replans'], transport_replan_budget=transport_replan_budget)}
         if 'recover_alignment' in context['allowed_skills']:
             context['alignment_observation'] = alignment_observation(skills)
+        if (role_handoff and state['agent_handoffs']
+                and state['agent_handoffs'][-1]['to'] == role
+                and state['agent_handoffs'][-1]['observation_revision'] == state['observation_revision']):
+            context['handoff'] = state['agent_handoffs'][-1]
         if propose_grasp and 'pick' in context['allowed_skills']:
             previous = ([_compact_trial(trial) for trial in state['grasp_trials']]
                         if grasp_recovery is not None else state['grasp_trials'])
@@ -151,6 +207,13 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
                     or trial['observation_revision'] != state['observation_revision']):
                 raise ValueError('Adapter check returned a mismatched grasp or observation revision.')
         trials = [*state['grasp_trials'], trial]
+        if role_handoff and not trial['accepted']:
+            if not _repairable_grasp(trial):
+                return {'grasp_trials': trials, 'status': 'failed',
+                        'error': 'Grasp check did not establish a repairable preflight rejection.'}
+            if state.get('grasp_recovery_receipt'):
+                return {'grasp_trials': trials, 'status': 'stopped',
+                        'error': 'Recovered grasp rejected before original-scene pick.'}
         if not trial['accepted'] and len(trials) >= trial_limit:
             return {'grasp_trials': trials, 'status': 'stopped', 'error': 'Grasp proposal budget exhausted before pick.'}
         return {'grasp_trials': trials}
@@ -162,11 +225,20 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
                 or state['grasp_trials'][-1]['observation_revision'] >= state['observation_revision']
                 or state['observation'] != _snapshot(skills)):
             raise ValueError('Recovery requires a fresh observation after an eligible rejection.')
+        if role_handoff and (state['active_role'] != 'recovery'
+                or state['agent_handoffs'][-1]['proof']['source_state'] != _handoff_scene(skills)):
+            raise ValueError('Recovery did not receive the transferred simulation state.')
         decision = grasp_recovery.recover(skills, deepcopy(state))
         if (not isinstance(decision, dict) or decision.get('status') not in ('proposed', 'abstained')
                 or not isinstance(decision.get('receipt'), dict) or state['observation'] != _snapshot(skills)):
             raise ValueError('Invalid recovery decision or the observed scene changed during recovery.')
         proposed = decision['status'] == 'proposed'
+        if role_handoff and proposed:
+            receipt = decision['receipt']
+            if (receipt.get('selection_status') != 'selected' or not receipt.get('selected_id')
+                    or receipt.get('observation_revision') != state['observation_revision']
+                    or receipt.get('proposed_grasp') != decision.get('grasp')):
+                raise ValueError('The recovery proposal is missing its current skill-selection evidence.')
         context = {'allowed_skills': ['pick', 'stop'], 'part_id': skills.config['part']['id'],
                    'target_id': skills.config['target']['id'], 'observation_revision': state['observation_revision'],
                    'grasp_task': {}}
@@ -191,6 +263,9 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
                 if (not trial['accepted'] or trial['grasp'] != a['grasp']
                         or trial['observation_revision'] != state['observation_revision']):
                     raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, 'No accepted current grasp.')
+                if role_handoff and state['active_role'] == 'recovery':
+                    if state['agent_handoffs'][-1]['proof']['source_state'] != _handoff_scene(skills):
+                        raise ValueError('The original scene changed before executing the recovered grasp.')
                 result = skills.pick(a['part_id'], grasp=a['grasp'])
             else:
                 result = skills.pick(a['part_id'])
@@ -234,6 +309,20 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
         else:
             evidence = skills.insertion_evidence([row])
         update = {'verification': {'source': 'sim_ground_truth', **evidence, 'measurements': json_safe(row)}}
+        if role_handoff and name == 'pick' and state['active_role'] == 'recovery':
+            receipt, trial = state.get('grasp_recovery_receipt'), state['grasp_trials'][-1]
+            approach = skills.results[-2] if len(skills.results) >= 2 else {}
+            part = skills.config['part']['id']
+            if (result.get('part_id') != part or approach.get('part_id') != part
+                    or approach.get('skill') not in ('approach_component/v1', 'approach/v1')
+                    or approach.get('status') != 'success' or approach.get('proposed_grasp') != trial['grasp']):
+                raise ValueError('Verified pick does not match the original approach for the selected grasp.')
+            update['verified_recovery_pick'] = {
+                'kind': 'verified_original_pick', 'selected_id': receipt['selected_id'] if receipt else None,
+                'recovery_method': state['agent_handoffs'][-1]['proof']['recovery_method'],
+                'accepted_grasp': trial['grasp'], 'preflight_revision': trial['observation_revision'],
+                'held_and_lifted': checks['held_and_lifted'], 'part_bottom_clearance_m': row['part_bottom_clearance_m'],
+                'source_state': _handoff_scene(skills)}
         if name == 'recover_alignment':
             update.update(pending_failure=None, recoveries=state['recoveries'] + 1, error=None)
         else:
@@ -272,6 +361,8 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
             current = {**state, **update}
             if on_event:
                 extra = {}
+                if role_handoff and 'agent_handoffs' in update:
+                    extra['handoff'] = update['agent_handoffs'][-1]
                 if name == 'check_grasp' and update.get('grasp_trials'):
                     trial = current['grasp_trials'][-1]
                     extra['grasp_trial'] = _compact_trial(trial) if grasp_recovery is not None else trial

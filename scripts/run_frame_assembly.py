@@ -121,8 +121,10 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
         raise ValueError('Resume requires the full live single-policy nominal frame.')
     if planner_candidate is not None and (target_parts is not None or resume_run is not None):
         raise ValueError('An external plan requires a fresh episode executing its entire admitted order.')
-    if llm_config is not None and (live_pair or mode != 'single' or policies is not None):
-        raise ValueError('The live frame requires single mode and one model configuration.')
+    if llm_config is not None and (live_pair or mode not in ('single','roles') or policies is not None):
+        raise ValueError('The live frame requires a graph policy and one shared model configuration.')
+    if resume_run is not None and mode == 'roles':
+        raise ValueError('The existing resume format tracks a single policy.')
     if live_pair and (mode != 'single' or product_count != 3 or policies is not None or planner_candidate is not None):
         raise ValueError('The live post/sleeve cell requires 3 parts, single policy and its built-in prerequisite order.')
     if policies is not None and (mode == 'scripted' or not isinstance(policies, dict)
@@ -151,7 +153,7 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
     try:
         if live:
             from llm_runtime import ApiLedger, create_openai_client, load_llm_config
-            from openai_policy import OpenAIAssemblyPolicy
+            from openai_policy import OpenAIAssemblyPolicy, OpenAIRecoveryAgent
             config = load_llm_config(post_sleeve_llm_config if live_pair else llm_config).validate(live=True)
         model, data, registry = build_frame_scene(product_count, transfer_obstacle=transfer_obstacle,
                                                  first_sleeve_cell=live_pair)
@@ -199,9 +201,14 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
             if resume:
                 carry_accounting(ledger, parent, resume_run)
             client = create_openai_client(config)
-            policies = {'single': OpenAIAssemblyPolicy(config, client, ledger)}
+            if mode == 'roles':
+                policies = {'assembly': OpenAIAssemblyPolicy(config, client, ledger, role='assembly'),
+                            'recovery': OpenAIRecoveryAgent(config, client, ledger)}
+            else:
+                policies = {'single': OpenAIAssemblyPolicy(config, client, ledger)}
             if trigger:
-                policies['single'] = DevelopmentFirstGrasp(policies['single'])
+                owner = 'assembly' if mode == 'roles' else 'single'
+                policies[owner] = DevelopmentFirstGrasp(policies[owner])
         write_json(recorder.run_dir / 'resolved_config.json', {
             'registry': registry, 'environment': 'simulation', 'observation_source': 'sim_ground_truth',
             'planner_provenance': planner_provenance,
@@ -211,6 +218,8 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
             'empty_approach_strategy': empty_approach_strategy,
             'transport_replan_budget': transport_replan_budget, 'transport_replan_budget_scope': 'episode',
             'policy_kind': 'openai_responses' if live else 'scripted', 'orchestration': mode, 'scenario': scenario,
+            **({'agent_roles': ['assembly','recovery'], 'budget_scope': 'shared_episode'}
+               if live and mode == 'roles' else {}),
             'completion_protocol': ('physics_verifier' if live else 'scripted_skill_verification'
                                     if mode == 'scripted' else 'policy_finish_then_physics_verifier'),
             'recovery_budget': remaining_recoveries, 'simulator_version': mujoco.__version__,
@@ -282,7 +291,8 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
                 skills_type = FrameSkills
                 if library is not None and active == 'post_1':
                     recovery = GraphGraspRecovery(library, config, client, ledger,
-                        recorder.run_dir / 'grasp_recovery' / active, recorder.run_dir.name + '-' + active)
+                        recorder.run_dir / 'grasp_recovery' / active, recorder.run_dir.name + '-' + active,
+                        recovery_agent=policies.get('recovery'))
                     skills_type = RecordedFrameSkills
                 skills = skills_type(model, data, active, registry, installed, sample, stage,
                     transport_strategy=transport_strategy, on_transport_preflight_failure=transport_failure,
@@ -359,7 +369,8 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
                         'next_parts': [name for name in sequence if name not in installed],
                         'part_episodes': part_episodes, 'results': results, 'graph_states': graph_states,
                         'recovery_budget_remaining': remaining_recoveries,
-                        'transport_replan_budget_remaining': remaining_replans, 'llm_usage': ledger.summary()})
+                        'transport_replan_budget_remaining': remaining_replans, 'llm_usage': ledger.summary(),
+                        **({'agent_usage': ledger.agent_totals()} if mode == 'roles' else {})})
                 if snapshots:
                     save_snapshot(model, data, skills.config, recorder.run_dir / f'after_{active}.png')
             else:
@@ -429,6 +440,7 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
               'policy_kind': 'openai_responses' if live else 'scripted', 'api_calls': ledger.model_requests if ledger else 0,
               **({'part_episodes': part_episodes, 'final_verification': final_verification,
                   'llm_usage': ledger.summary() if ledger else None} if live else {}),
+              **({'agent_usage': ledger.agent_totals() if ledger else {}} if live and mode == 'roles' else {}),
               'resume': resume, 'resume_checkpoint': checkpoint, 'terminal_checkpoint': terminal_checkpoint,
               'checkpoint_error': checkpoint_error, 'segment_execution_order': segment_installed,
               'segment_wall_elapsed_s': segment_elapsed,
@@ -444,7 +456,7 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--parts', type=int, choices=range(2, 11), default=6)
-    parser.add_argument('--llm-config', type=Path, help='Live single-policy numeric grasps for all requested frame components')
+    parser.add_argument('--llm-config', type=Path, help='Live model and shared episode limits for single or role-separated policies')
     parser.add_argument('--resume-run', type=Path, help='Continue a verified pre-pick stop; preserve the scene, rejected trials and total API budget')
     parser.add_argument('--post-sleeve-llm-config', type=Path, help='Live post then sleeve in one initially empty fixture (--parts 3 --mode single)')
     parser.add_argument('--snapshots', action='store_true')

@@ -177,6 +177,9 @@ def audit(run_dir, *, planner_candidate=None):
     print('trace rows',row_count,'by part',dict(counts),'simulation seconds',r['simulated_seconds'])
     assert all(hashlib.sha256((root/'scripts'/f).read_bytes()).hexdigest()==h for f,h in c['implementation_sha256'].items())
     print('source hashes',len(c['implementation_sha256']))
+    if c.get('orchestration') == 'roles' and fixed_trigger:
+        from audit_agent_handoffs import audit_agent_handoffs
+        print('verified agent handoffs and usage', audit_agent_handoffs(folder,r,c))
     print('audit_source_sha256',hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
     print('independent_audit_passed')
 

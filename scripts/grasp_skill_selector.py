@@ -70,6 +70,11 @@ def select_skill(query, library, *, config, log_dir, client=None, shared_ledger=
         for turn in range(rounds):
             stage = 'prepare'
             request = _request(config,query,events,hits,read_skills,rounds-turn)
+            if ledger.current_agent == 'recovery':
+                request['instructions'] = ('You are the recovery agent. The assembly agent has handed you a measured '
+                    'failure. Use your catalogue tools and the current handoff to decide whether to propose a skill. '
+                    + request['instructions'])
+                ledger.record('recovery_search_prepared', request_hash=digest(request), round=turn + 1)
             full = {**request,'max_output_tokens':config.max_output_tokens,'store':False,'service_tier':'default'}
             _write_json(folder/f'request_{turn+1}.json',full)
             stage = 'count'
@@ -78,6 +83,9 @@ def select_skill(query, library, *, config, log_dir, client=None, shared_ledger=
             stage = 'generate'
             ledger.begin_generation(count.input_tokens,digest(full))
             response = api.responses.create(**full).model_dump(mode='json')
+            if ledger.current_agent == 'recovery':
+                ledger.record('model_response_received', response_id=response.get('id'), model=response.get('model'),
+                              response_status=response.get('status'), usage=response.get('usage'))
             ledger.settle_usage(response['usage'])
             _write_json(folder/f'response_{turn+1}.json',response)
             stage = 'apply_operation'

@@ -69,7 +69,7 @@ class PostSleeveEpisodeTests(unittest.TestCase):
 
     def test_conflicting_live_modes_are_rejected_before_client_construction(self):
         with patch('llm_runtime.create_openai_client') as client:
-            for options in ({'mode': 'roles'}, {'post_sleeve_llm_config': Path('other.toml')},
+            for options in ({'mode': 'scripted'}, {'post_sleeve_llm_config': Path('other.toml')},
                             {'planner_candidate': Path('candidate.json'), 'target_parts': ['post_1']},
                             {'policies': {'single': object()}}):
                 with self.subTest(options=options), self.assertRaises(ValueError):

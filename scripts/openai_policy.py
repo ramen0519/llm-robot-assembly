@@ -42,13 +42,15 @@ def compact_context(context):
     packet['experiences'] = context.get('experiences', [])
     packet['recipes'] = context.get('recipes', [])
     packet['last_verification'] = context.get('last_verification')
+    if context.get('handoff') is not None:
+        packet['handoff'] = context['handoff']
     encoded = json.dumps(packet, ensure_ascii=False, allow_nan=False, separators=(',', ':'))
     if len(encoded.encode('utf-8')) > 32768:
         raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, 'Policy packet exceeds 32KiB; no silent truncation.')
     return packet
 
 
-def build_request(config, context):
+def build_request(config, context, *, role='single'):
     packet = compact_context(context)
     properties = {'skill': {'type': 'string', 'enum': context['allowed_skills']},
                   'part_id': {'type': 'string', 'enum': [context['part_id']]},
@@ -81,8 +83,9 @@ def build_request(config, context):
         if packet['grasp_task']['previous_trials']:
             grasp_instruction += (' The scene has been re-observed. For a rejected grasp, change at least one '
                                   'geometrically relevant parameter based on the contact evidence, or stop.')
+    role_prompt = ROLE_INSTRUCTIONS['single'] if role == 'single' else LIVE_ROLE_INSTRUCTIONS[role]
     request = {'model': config.model,
-               'instructions': POLICY_INSTRUCTIONS + '\n' + ROLE_INSTRUCTIONS['single'] + grasp_instruction,
+               'instructions': POLICY_INSTRUCTIONS + '\n' + role_prompt + grasp_instruction,
                'input': json.dumps(packet, ensure_ascii=False, allow_nan=False, separators=(',', ':')),
                'tools': [{'type': 'function', 'name': 'propose_assembly_action',
                           'description': 'Propose a permitted skill; the host must validate before execution.',
@@ -123,14 +126,35 @@ def parse_proposal(response, context):
     return validate_proposal(value, context)
 
 
+LIVE_ROLE_INSTRUCTIONS = {
+    'assembly': ('You are the assembly agent. Use the latest observation to carry out the current installation. '
+                 'Propose grasp parameters when requested. When recovery hands the part back, read its verified '
+                 'outcome and the current observation before choosing the next permitted assembly action.'),
+    'recovery': ('You are the recovery agent. Use the particular measured failure, handoff and fresh observation '
+                 'to correct the rejected proposal, request a supported recovery action, or stop. '
+                 'The executor checks your proposal and returns control after physical verification.')
+}
+
+
 class OpenAIAssemblyPolicy:
     kind = 'openai_responses'
 
-    def __init__(self, config, client, ledger):
+    def __init__(self, config, client, ledger, *, role='single'):
+        if role not in ('single', 'assembly', 'recovery'):
+            raise ValueError('Unsupported model policy role.')
+        self.role = role
         self.config, self.client, self.ledger = config.validate(live=True), client, ledger
 
     def propose(self, context):
-        request = build_request(self.config, context)
+        if self.role == 'single':
+            return self._propose(context)
+        if context.get('active_role') != self.role:
+            raise ValueError('Agent cannot act while the other role owns this observation.')
+        with self.ledger.agent_turn(self.role):
+            return self._propose(context)
+
+    def _propose(self, context):
+        request = build_request(self.config, context, role=self.role)
         request_hash = hashlib.sha256(json.dumps(request, sort_keys=True).encode()).hexdigest()
         ledger = self.ledger
         ledger.record('request_prepared', request_hash=request_hash, request=request)
@@ -175,3 +199,19 @@ class OpenAIAssemblyPolicy:
             raise FailureEvent(FailureCode.POLICY_RESPONSE_INVALID, 'No valid current-state action in the model response; no physical command issued.', phase='policy/validation') from None
         ledger.record('proposal_validated', response_id=body.get('id'), proposal=proposal, summary=ledger.summary())
         return proposal
+
+
+class OpenAIRecoveryAgent(OpenAIAssemblyPolicy):
+    def __init__(self, config, client, ledger):
+        super().__init__(config, client, ledger, role='recovery')
+
+    def select_skill(self, query, library, *, log_dir):
+        from grasp_skill_selector import select_skill
+        transfer = query['handoff']
+        if (transfer['from'] != 'assembly' or transfer['to'] != 'recovery'
+                or transfer['part_id'] != query['part_id']
+                or transfer['observation_revision'] != query['observation_revision']):
+            raise ValueError('Skill search requires a fresh transfer from the assembly agent.')
+        with self.ledger.agent_turn('recovery'):
+            return select_skill(query, library, config=self.config, client=self.client,
+                                shared_ledger=self.ledger, log_dir=log_dir)
