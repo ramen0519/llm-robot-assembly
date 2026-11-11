@@ -1,6 +1,6 @@
 # LLM Robot Assembly
 
-**22P · 조립·복구 에이전트 인계 (2026-11-11).** 두 역할을 구현하고, 저장된 Astra 결정을 사용한 새 MuJoCo 회차에서 첫 기둥·슬리브3의 왕복 인계와 9/9 설치를 확인했다. 실제 API 호출 0회. [회차별 증거와 실행 명령](docs/STEP_22P_ASSEMBLY_RECOVERY_AGENTS.md)
+**22P · 조립·복구 에이전트 인계 (2026-11-11).** 두 Astra high 에이전트가 실제 호출된 새 MuJoCo 회차에서 첫 기둥의 스킬 복구, 슬리브 3개의 파지 수정 및 9/9 설치를 검증했다. 조립 17회·복구 6회, 합계 $1.20374. [회차별 증거와 실행 명령](docs/STEP_22P_ASSEMBLY_RECOVERY_AGENTS.md)
 
 **22O · 외부 분해 순서로 전체 조립 (2026-11-11).** Astra high가 첫 기둥의 간섭을 복구하고, 저장된 ASAP 분해 순서를 뒤집어 같은 MuJoCo 장면에서 9/9개를 설치했다. 최종 최대 위치 오차 0.227 mm, 덮개 네 구멍의 최소 측면 여유 1.823 mm. [실행 결과와 재현 명령](docs/STEP_22O_NATIVE_PLAN_FULL_FRAME.md)
 
