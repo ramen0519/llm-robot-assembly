@@ -27,7 +27,7 @@ def _digest(value):
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def _turns(folder, result, config):
+def _turns(folder, result, config, *, allow_idle_recovery=False):
     """Group the serial journal and recompute each agent's totals from the provider usages."""
     turns, seen = [], set()
     totals = {role: Counter() for role in ('assembly', 'recovery')}
@@ -80,13 +80,19 @@ def _turns(folder, result, config):
         totals[role].update(api_calls=1, input_tokens=inputs, output_tokens=outputs, reasoning_tokens=reasoning,
                             known_api_cost_estimate_usd=dollars)
     for role, observed in [*totals.items(), ('episode', totals['assembly'] + totals['recovery'])]:
+        idle = allow_idle_recovery and role == 'recovery' and observed['api_calls'] == 0
+        if idle and role not in result['agent_usage']:
+            continue
         reported = result['llm_usage'] if role == 'episode' else result['agent_usage'][role]
-        _require(reported['unknown_usage_requests'] == 0 and observed['api_calls'] > 0,
+        _require(reported['unknown_usage_requests'] == 0 and (observed['api_calls'] > 0 or idle),
                  'missing completed real turns for ' + role)
         for key in ('api_calls', 'input_tokens', 'output_tokens', 'reasoning_tokens', 'known_api_cost_estimate_usd'):
             _require(abs(Decimal(str(reported[key])) - observed[key]) <= Decimal('0.000000000001'),
                      f'{role} {key} disagrees with provider responses')
-    _require(set(result['agent_usage']) == set(totals) and len(turns) == result['api_calls'],
+    expected_roles = set(totals)
+    if allow_idle_recovery and not totals['recovery']['api_calls'] and 'recovery' not in result['agent_usage']:
+        expected_roles.remove('recovery')
+    _require(set(result['agent_usage']) == expected_roles and len(turns) == result['api_calls'],
              'unknown agent, omitted or duplicated charge')
     return turns
 

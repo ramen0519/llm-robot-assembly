@@ -1,6 +1,6 @@
-"""Parametric ten-part development candidate; all geometry is expressed in metres.
+"""Parametric development frames; all geometry is expressed in metres.
 
-The base is pre-fixtured. Nine parts still require robot installation.
+The base is pre-fixtured. Each post, sleeve and cover is a separate product part.
 CAD is generated from the same disjoint boxes used for contact geometry,
 so square holes never become filled convex mesh collision shapes.
 """
@@ -12,6 +12,13 @@ from pathlib import Path
 
 import manifold3d as m3d
 import numpy as np
+
+
+FRAME_LAYOUTS = {
+    'four_post': ((-1, -1), (1, -1), (-1, 1), (1, 1)),
+    'triangle_three_post': ((-1, -1), (1, -1), (0, 1)),
+}
+TRIANGLE_CANDIDATE_ID = 'triangle_three_post_v1'
 
 
 @dataclass(frozen=True)
@@ -66,14 +73,16 @@ def perforated_plate(width, height, hole_width, centers, floor=0.):
     return boxes
 
 
-def frame_hole_centers(d):
-    return [(x * d.post_spacing / 2, y * d.post_spacing / 2) for x, y in ((-1, -1), (1, -1), (-1, 1), (1, 1))]
+def frame_hole_centers(d, layout='four_post'):
+    if layout not in FRAME_LAYOUTS:
+        raise ValueError(f'Unknown frame layout: {layout}')
+    return [(x * d.post_spacing / 2, y * d.post_spacing / 2) for x, y in FRAME_LAYOUTS[layout]]
 
 
-def product_parts(dim=None):
+def product_parts(dim=None, layout='four_post'):
     d = dim or FrameDimensions()
     d.validate()
-    centers = frame_hole_centers(d)
+    centers = frame_hole_centers(d, layout)
     parts = [{'id': 'base', 'kind': 'base', 'fixed': True, 'position_product_m': [0., 0., 0.],
               'requires': [], 'boxes': perforated_plate(d.base_width, d.base_height, d.hole_width, centers, d.socket_floor)}]
     for i, (x, y) in enumerate(centers, 1):
@@ -90,7 +99,7 @@ def product_parts(dim=None):
                   'size': [.030, .025, .030]})
     parts.append({'id': 'cover', 'kind': 'cover', 'fixed': False,
                   'position_product_m': [0., 0., d.base_height + d.sleeve_height],
-                  'requires': [f'sleeve_{i}' for i in range(1, 5)] + [f'post_{i}' for i in range(1, 5)],
+                  'requires': [f'{kind}_{i}' for kind in ('sleeve', 'post') for i in range(1, len(centers) + 1)],
                   'boxes': cover})
     return parts
 
@@ -107,19 +116,20 @@ def solid_for(part):
     return solid.scale((.001, .001, .001))
 
 
-def export_product(output_dir, dim=None):
+def export_product(output_dir, dim=None, layout='four_post'):
     d = dim or FrameDimensions()
+    parts = product_parts(d, layout)
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     # Never silently replace an experiment's CAD.
     if any(output.iterdir()):
         raise ValueError('CAD output directory must be empty.')
-    manifest = {'schema_version': 1, 'candidate_id': 'four_post_frame_v2_center_grip', 'units': 'metre',
-                'frame': 'product_base_bottom_center', 'product_parts': 10, 'robot_installations': 9,
+    manifest = {'schema_version': 1, 'candidate_id': 'four_post_frame_v2_center_grip' if layout == 'four_post' else TRIANGLE_CANDIDATE_ID,
+                'units': 'metre', 'frame': 'product_base_bottom_center', 'product_parts': len(parts), 'robot_installations': len(parts) - 1,
                 'status': 'development_candidate', 'robot_execution_validated': False,
                 'fixture': 'base rigidly pre-fixtured; fixture engineering not validated',
                 'dimensions_m': vars(d), 'parts': []}
-    for part in product_parts(d):
+    for part in parts:
         solid = solid_for(part)
         mesh = solid.to_mesh()
         vertices, faces = np.asarray(mesh.vert_properties[:, :3]), np.asarray(mesh.tri_verts)
@@ -143,6 +153,7 @@ def export_product(output_dir, dim=None):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--layout', choices=FRAME_LAYOUTS, default='four_post')
     args = parser.parse_args()
-    result = export_product(args.output)
+    result = export_product(args.output, layout=args.layout)
     print(json.dumps({'status': result['status'], 'parts': len(result['parts']), 'output': str(args.output)}))

@@ -91,11 +91,19 @@ def verify_interference_recovery(state, approach):
         raise ValueError('The development interference was not recovered with the selected and rechecked grasp.')
 
 
-def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='scripted', scenario='nominal', show_viewer=False,
+def execute_trial(*, product_count=None, snapshots=False, output_root=None, mode='scripted', scenario='nominal', show_viewer=False,
                   transport_strategy='direct', transfer_obstacle=False, observer=None,
                   transport_replan_budget=0, empty_approach_strategy=None, policies=None, planner_candidate=None,
                   post_sleeve_llm_config=None, llm_config=None, resume_run=None,
-                  target_parts=None, grasp_skill_library=None, sleeve_memory=None, sleeve_memory_targets=None):
+                  target_parts=None, grasp_skill_library=None, sleeve_memory=None, sleeve_memory_targets=None,
+                  layout='four_post'):
+    if layout not in ('four_post', 'triangle_three_post'):
+        raise ValueError('Unknown product layout.')
+    triangular = layout == 'triangle_three_post'
+    if product_count is None:
+        product_count = 8 if triangular else 6
+    if triangular and product_count != 8:
+        raise ValueError('The triangular frame contains one base, three posts, three sleeves and one cover.')
     trigger = scenario == 'first_post_grasp_interference'
     if mode not in ('scripted', 'single', 'roles') or scenario not in ('nominal', 'first_alignment_offset', 'first_post_grasp_interference'):
         raise ValueError('Unknown orchestration mode/scenario')
@@ -113,6 +121,7 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
         raise ValueError('Unknown empty-gripper approach strategy.')
     live_pair = post_sleeve_llm_config is not None
     live = live_pair or llm_config is not None
+    record_boundaries = live or triangular
     if sleeve_memory_targets is not None and sleeve_memory is None:
         raise ValueError('Selecting memory targets requires a sleeve experience file.')
     if sleeve_memory is not None and (llm_config is None or mode != 'roles' or resume_run is not None):
@@ -160,13 +169,14 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
             from llm_runtime import ApiLedger, create_openai_client, load_llm_config
             from openai_policy import OpenAIAssemblyPolicy, OpenAIRecoveryAgent
             config = load_llm_config(post_sleeve_llm_config if live_pair else llm_config).validate(live=True)
+        variant_options = {'layout': layout} if triangular else {}
         model, data, registry = build_frame_scene(product_count, transfer_obstacle=transfer_obstacle,
-                                                 first_sleeve_cell=live_pair)
+                                                 first_sleeve_cell=live_pair, **variant_options)
         if planner_candidate is None:
             sequence = installation_sequence(registry, target_parts)
         else:
             from planner_candidate_input import load_robot_candidate
-            order, planner_provenance = load_robot_candidate(planner_candidate, registry)
+            order, planner_provenance = load_robot_candidate(planner_candidate, registry, **variant_options)
             sequence = installation_sequence(registry, order)
         if trigger and sequence[0] != 'post_1':
             raise ValueError('The interference scenario must start with post_1.')
@@ -174,7 +184,8 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
             from sleeve_grasp_memory import load_experience
             from sleeve_memory_policy import FirstGraspMemory
             sleeve_record = load_experience(sleeve_memory)
-            search_targets = list(sleeve_memory_targets) if sleeve_memory_targets is not None else ['sleeve_2','sleeve_4']
+            default_targets = ['sleeve_2','sleeve_3'] if triangular else ['sleeve_2','sleeve_4']
+            search_targets = list(sleeve_memory_targets) if sleeve_memory_targets is not None else default_targets
             if (not search_targets or len(set(search_targets)) != len(search_targets)
                     or any(n not in sequence or registry[n]['kind'] != 'sleeve' or n == sleeve_record['source_part']
                            for n in search_targets)):
@@ -226,6 +237,7 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
                 policies[owner] = DevelopmentFirstGrasp(policies[owner])
         write_json(recorder.run_dir / 'resolved_config.json', {
             'registry': registry, 'environment': 'simulation', 'observation_source': 'sim_ground_truth',
+            'product_layout': layout,
             'planner_provenance': planner_provenance,
             **({'sleeve_memory': {'experience_id': sleeve_record['experience_id'], 'targets': search_targets}}
                if sleeve_record is not None else {}),
@@ -318,7 +330,7 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
                 transport_attempts[active] = skills.transport_attempts
                 policy_replan_attempts[active] = skills.replan_attempts
                 empty_approach_attempts[active] = skills.empty_approach_attempts
-                if live:
+                if record_boundaries:
                     start = episode_boundary(model, data, registry, installed)
                     if resume and active == resume['active_part']:
                         if start != resume['restored_boundary']:
@@ -329,7 +341,7 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
                     if previous_end is not None and start != previous_end:
                         raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, 'Scene changed between component installations.')
                     if not (resume and active == resume['active_part']):
-                        part_episodes[active] = {'start': start, 'api_calls_at_start': ledger.model_requests}
+                        part_episodes[active] = {'start': start, 'api_calls_at_start': ledger.model_requests if ledger else 0}
                     if not installed and snapshots:
                         save_snapshot(model, data, skills.config, recorder.run_dir / 'before_assembly.png')
                 if observer:
@@ -365,7 +377,8 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
                         first_grasp_memory=(FirstGraspMemory(sleeve_record, recorder.run_dir/'memory_search'/active,
                             recorder.run_dir.name) if active in search_targets else None),
                         transport_replan_budget=min(1, replans_at_part_start),
-                        task_id='four_post_frame_wide/' + active, insert_result_skill=expected, propose_grasp=live, finish_on_verified_insert=live,
+                        task_id=('triangle_three_post_v1/' if triangular else 'four_post_frame_wide/') + active,
+                        insert_result_skill=expected, propose_grasp=live, finish_on_verified_insert=live,
                         retry_history=parent['graph_states'][active] if resume and active == resume['active_part'] else None)
                     graph_states[active] = state
                     remaining_recoveries -= state['recoveries']
@@ -378,10 +391,10 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
                 installed.add(active)
                 segment_installed.append(active)
                 results.append(result)
-                if live:
+                if record_boundaries:
                     previous_end = episode_boundary(model, data, registry, installed)
                     part_episodes[active].update(end=previous_end, executed_approach=skills.results[0],
-                                                 api_calls_at_end=ledger.model_requests)
+                                                 api_calls_at_end=ledger.model_requests if ledger else 0)
                     write_json(recorder.run_dir / 'progress.json', {
                         'status': 'running', 'resume': resume, 'completed_installations': sorted(installed),
                         **({'planner_provenance': planner_provenance, 'requested_sequence': sequence}
@@ -389,15 +402,15 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
                         'next_parts': [name for name in sequence if name not in installed],
                         'part_episodes': part_episodes, 'results': results, 'graph_states': graph_states,
                         'recovery_budget_remaining': remaining_recoveries,
-                        'transport_replan_budget_remaining': remaining_replans, 'llm_usage': ledger.summary(),
-                        **({'agent_usage': ledger.agent_totals()} if mode == 'roles' else {})})
+                        'transport_replan_budget_remaining': remaining_replans, 'llm_usage': ledger.summary() if ledger else None,
+                        **({'agent_usage': ledger.agent_totals()} if ledger and mode == 'roles' else {})})
                 if snapshots:
                     save_snapshot(model, data, skills.config, recorder.run_dir / f'after_{active}.png')
             else:
                 row = skills.verifier.sample(data, skills.motion.reference, allow_support=True, allow_grasp=False)
                 terminal = skills.insertion_evidence([row])
                 skills.verifier.verify_other_parts(data)
-                if live:
+                if record_boundaries:
                     before = episode_boundary(model, data, registry, installed)
                     sleeve_fits = {}
                     parts = {}
@@ -424,7 +437,7 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
     # Preserve valid physics on every terminal outcome, including API failures.
     # A saved state alone does not authorize resuming an uncertain action.
     terminal_checkpoint, checkpoint_error = None, None
-    if live and skills:
+    if record_boundaries and skills:
         try:
             terminal_checkpoint = episode_boundary(skills.model, skills.data, registry, installed)
             if not np.isfinite(terminal_checkpoint['integration_state']).all():
@@ -438,6 +451,8 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
                   and error == 'Grasp proposal budget exhausted before pick.' else None)
     segment_elapsed = time.monotonic() - wall_started
     result = {'status': status, 'error': error, 'run_dir': str(recorder.run_dir),
+              'product_layout': layout, 'complete_product_verified': status == 'success' and 'cover' in installed
+                  and len(installed) == product_count - 1,
               'planner_provenance': planner_provenance, 'execution_order': [r['part_id'] for r in results],
               'product_parts_present': product_count, 'robot_installations_goal': len(sequence) if sequence is not None else None,
               'requested_sequence': sequence, **({'grasp_skill_library': library_info, 'scenario': scenario} if library else {}),
@@ -459,7 +474,7 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
               'policy_calls': sum(s['policy_calls'] for s in graph_states.values()),
               'policy_kind': 'openai_responses' if live else 'scripted', 'api_calls': ledger.model_requests if ledger else 0,
               **({'part_episodes': part_episodes, 'final_verification': final_verification,
-                  'llm_usage': ledger.summary() if ledger else None} if live else {}),
+                  'llm_usage': ledger.summary() if ledger else None} if record_boundaries else {}),
               **({'agent_usage': ledger.agent_totals() if ledger else {}} if live and mode == 'roles' else {}),
               'resume': resume, 'resume_checkpoint': checkpoint, 'terminal_checkpoint': terminal_checkpoint,
               'checkpoint_error': checkpoint_error, 'segment_execution_order': segment_installed,
@@ -475,7 +490,8 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--parts', type=int, choices=range(2, 11), default=6)
+    parser.add_argument('--layout', choices=['four_post','triangle_three_post'], default='four_post')
+    parser.add_argument('--parts', type=int, choices=range(2, 11), help='Includes the fixed base; default 6 for the legacy frame, 8 for the triangle')
     parser.add_argument('--llm-config', type=Path, help='Live model and shared episode limits for single or role-separated policies')
     parser.add_argument('--resume-run', type=Path, help='Continue a verified pre-pick stop; preserve the scene, rejected trials and total API budget')
     parser.add_argument('--post-sleeve-llm-config', type=Path, help='Live post then sleeve in one initially empty fixture (--parts 3 --mode single)')
@@ -490,10 +506,10 @@ if __name__ == '__main__':
     parser.add_argument('--target-parts', nargs='+', help='Ordered installation goals in the unchanged full scene')
     parser.add_argument('--grasp-skill-library', type=Path, help='Frozen catalogue for measured first-post interference')
     parser.add_argument('--sleeve-memory', type=Path, help='Verified sleeve experience to search before the first grasp')
-    parser.add_argument('--sleeve-memory-targets', nargs='+', help='Target sleeves for this search (default: sleeve_2 sleeve_4)')
+    parser.add_argument('--sleeve-memory-targets', nargs='+', help='Search targets; defaults to sleeves 2 and 4 on the four-post frame, 2 and 3 on the triangle')
     parser.add_argument('--planner-candidate', type=Path, help='Native candidate whose CAD, frames and evidence are rechecked before motion')
     args = parser.parse_args()
-    result = execute_trial(product_count=args.parts, snapshots=args.snapshots, mode=args.mode, scenario=args.scenario,
+    result = execute_trial(product_count=args.parts, layout=args.layout, snapshots=args.snapshots, mode=args.mode, scenario=args.scenario,
         show_viewer=args.viewer, transport_strategy=args.transport_strategy, transfer_obstacle=args.transfer_obstacle,
         empty_approach_strategy=args.empty_approach_strategy, transport_replan_budget=args.transport_replan_budget,
         planner_candidate=args.planner_candidate, post_sleeve_llm_config=args.post_sleeve_llm_config,

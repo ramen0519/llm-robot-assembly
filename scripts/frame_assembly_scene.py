@@ -1,35 +1,41 @@
-"""Compound collision geometry and explicit mating relations for a ten-part frame."""
+"""Compound collision geometry and explicit mating relations for the selected frame."""
 from copy import deepcopy
 import mujoco
 import numpy as np
-from frame_product import frame_hole_centers, product_parts
+from frame_product import TRIANGLE_CANDIDATE_ID, frame_hole_centers, product_parts
 from insertion_scene import BASE_NAME, BASE_XY_TABLE, insertion_config, add_transfer_test_obstacle
 from multi_post_scene import MULTI_DIMENSIONS, SPAWNS
 from workcell_scene import build_workcell_spec, compile_workcell, part_name, table_to_world, yaw_quat_wxyz, yaw_rotation, validate_config
 
 # Front tray avoids the measured arm/gripper self-collision of the old rear-left slot.
 PART_SPAWNS = [*SPAWNS, (-.28, .05), (.26, -.20), (.13, -.25), (.04, -.25), (.27, .17)]
+TRAY_POSITIONS = dict(zip(
+    ('post_1', 'post_2', 'post_3', 'post_4', 'sleeve_1', 'sleeve_2', 'sleeve_3', 'sleeve_4', 'cover'),
+    PART_SPAWNS, strict=True))
 
 
-def build_frame_scene(product_count=6, *, cover_grip='center', transfer_obstacle=False, first_sleeve_cell=False):
+def build_frame_scene(product_count=6, *, cover_grip='center', transfer_obstacle=False, first_sleeve_cell=False,
+                      layout='four_post'):
     if type(transfer_obstacle) is not bool:
         raise ValueError('The transfer-obstacle option must be boolean.')
     # Scene construction also supports isolated compound-component probes.
     # The full-frame runner controls its separately validated execution scope.
     if cover_grip not in ('center', 'edge'):
         raise ValueError('Unknown cover grip variant')
-    if type(product_count) is not int or not 2 <= product_count <= 10:
-        raise ValueError('Product count must include base plus one to nine free components.')
+    d = MULTI_DIMENSIONS
+    product = product_parts(d, layout)
+    if type(product_count) is not int or not 2 <= product_count <= len(product):
+        raise ValueError(f'{layout} supports 2 to {len(product)} parts, including the fixed base.')
     if first_sleeve_cell and product_count != 3:
         raise ValueError('The first sleeve cell contains the base, post_1 and sleeve_1.')
-    d = MULTI_DIMENSIONS
     config = insertion_config(d)
     spec = build_workcell_spec(config)
     base = spec.worldbody.add_body(name=BASE_NAME, pos=table_to_world(config, [*BASE_XY_TABLE, 0.]),
                                   quat=yaw_quat_wxyz(config['table']['yaw_deg']))
-    product = product_parts(d)
+    candidate = 'four_post_frame_wide_v2_center_grip' if layout == 'four_post' else TRIANGLE_CANDIDATE_ID
     if cover_grip == 'edge':
         next(b for b in product[-1]['boxes'] if b['name'] == 'grip_tab')['center'][1] = -d.base_width / 2 + .015
+        candidate = 'four_post_frame_edge_grip_probe' if layout == 'four_post' else 'triangle_three_post_edge_grip_probe'
     for box in product[0]['boxes']:
         base.add_geom(name=BASE_NAME + '_' + box['name'], type=mujoco.mjtGeom.mjGEOM_BOX,
                       pos=box['center'], size=np.array(box['size']) / 2, rgba=[.18, .42, .70, 1.],
@@ -37,28 +43,28 @@ def build_frame_scene(product_count=6, *, cover_grip='center', transfer_obstacle
     # This fixture blocks transport while leaving the second socket's descent clear.
     obstacle = add_transfer_test_obstacle(spec, config, center_table_m=[.040, -.150, .115]) if transfer_obstacle else None
     registry = {}
-    components = enumerate(product[1:product_count])
+    components = product[1:product_count]
     if first_sleeve_cell:
-        # Keep CAD indices and tray positions from the full frame.
-        components = [(i, part) for i, part in enumerate(product[1:]) if part['id'] in ('post_1', 'sleeve_1')]
-    for i, part in components:
+        components = [part for part in product if part['id'] in ('post_1', 'sleeve_1')]
+    for part in components:
         kind = part['kind']
+        spawn = TRAY_POSITIONS[part['id']]
         boxes = deepcopy(part['boxes'])
         low = np.min([np.array(b['center']) - np.array(b['size']) / 2 for b in boxes], axis=0)
         high = np.max([np.array(b['center']) + np.array(b['size']) / 2 for b in boxes], axis=0)
         origin, size = (low + high) / 2, high - low
         c = deepcopy(config)
         c['profile_name'] = 'compound_frame_front_tray_v2'
-        c['part'].update(id=part['id'], size_m=size.tolist(), spawn_xy_table_m=list(PART_SPAWNS[i]),
+        c['part'].update(id=part['id'], size_m=size.tolist(), spawn_xy_table_m=list(spawn),
                          mass_kg=.080 if kind == 'cover' else .040)
         target = np.array([*BASE_XY_TABLE, 0.]) + part['position_product_m'] + origin
         c['target'].update(id='mate_' + part['id'], xy_table_m=target[:2].tolist(), size_xy_m=[.20, .20])
         validate_config(c)
         collision_names = []
-        if i == 0:
+        if part['id'] == 'post_1':
             collision_names = [part_name(c) + '_geom']
         else:
-            body = spec.worldbody.add_body(name=part_name(c), pos=table_to_world(c, [*PART_SPAWNS[i], size[2] / 2 + .005]),
+            body = spec.worldbody.add_body(name=part_name(c), pos=table_to_world(c, [*spawn, size[2] / 2 + .005]),
                                           quat=yaw_quat_wxyz(c['table']['yaw_deg']))
             body.add_freejoint(name=part_name(c) + '_free')
             # Named reference only: zero collision bits/mass. Actual holes use convex boxes below.
@@ -80,14 +86,14 @@ def build_frame_scene(product_count=6, *, cover_grip='center', transfer_obstacle
             rim_z = d.socket_floor + d.post_height
             grasp = np.array([0., 0., .006])
         else:
-            support_ids = [f'sleeve_{k}' for k in range(1, 5)]
-            mating_ids = support_ids + [f'post_{k}' for k in range(1, 5)]
+            support_ids = [name for name in part['requires'] if name.startswith('sleeve_')]
+            mating_ids = list(part['requires'])
             rim_z = d.socket_floor + d.post_height
             tab = next(b for b in boxes if b['name'] == 'grip_tab')
             grasp = np.array(tab['center']) - origin + [0., 0., .006]
         bottom_target = target[2] - size[2] / 2
-        joint = {'product_candidate': 'four_post_frame_wide_v2_center_grip' if cover_grip == 'center' else 'four_post_frame_edge_grip_probe', 'dimensions_m': vars(d),
-                 'active_product_parts': product_count, 'eventual_product_parts': 10,
+        joint = {'product_candidate': candidate, 'dimensions_m': vars(d),
+                 'active_product_parts': product_count, 'eventual_product_parts': len(product),
                  'target_part_center_world_m': table_to_world(c, target),
                  'target_part_rotation_world': yaw_rotation(c['table']['yaw_deg']),
                  'socket_floor_z_world_m': c['table']['top_center_world_m'][2] + bottom_target,
@@ -101,11 +107,11 @@ def build_frame_scene(product_count=6, *, cover_grip='center', transfer_obstacle
                               'body_rotation_in_cad': np.eye(3).tolist(), 'collision_geom_names': collision_names,
                               'support_ids': support_ids, 'mating_ids': mating_ids,
                               'grasp_offset_part_m': grasp.tolist(),
-                              'spawn_center_world_m': table_to_world(c, [*PART_SPAWNS[i], size[2] / 2])}
+                              'spawn_center_world_m': table_to_world(c, [*spawn, size[2] / 2])}
         if kind == 'cover':
-            # The same CAD layout carves the four holes. Express them in the moving body frame.
+            # Use the same hole layout as the CAD and express it in the moving cover's frame.
             registry['cover']['bore_centers_part_m'] = {
                 f'post_{k}': (np.array([x, y, d.cover_height / 2]) - origin).tolist()
-                for k, (x, y) in enumerate(frame_hole_centers(d), 1)}
+                for k, (x, y) in enumerate(frame_hole_centers(d, layout), 1)}
     model, data = compile_workcell(spec, free_part_count=product_count - 1)
     return model, data, registry

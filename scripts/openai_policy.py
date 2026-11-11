@@ -66,7 +66,7 @@ def build_request(config, context, *, role='single'):
                           'The fingers must clear the socket rim throughout seating.')
         if context.get('insert_result_skill') == 'seat_cover/v1':
             clearance_goal = ('Account for the entire plate width versus the jaw opening, the height of the pads '
-                              'above the solid plate during closure, and clearance from the four posts while seating. '
+                              'above the solid plate during closure, and clearance from each mating post while seating. '
                               'If an approach intersects the sheet, use the signed pad-to-sheet clearance and the '
                               'raised feature geometry. Check the measured unloaded closing profile at the intended face width: '
                               'a grip on a raised feature must overlap its vertical faces '

@@ -9,7 +9,7 @@ import time
 
 import numpy as np
 from experience_memory import read_json
-from export_planner_input import export_bundle
+from export_planner_input import LAYOUTS, export_bundle
 from failure_report import write_json
 from frame_assembly_scene import build_frame_scene
 from workcell_scene import ROOT
@@ -26,13 +26,37 @@ def wsl_path(path):
     return '/mnt/' + p.drive[0].lower() + '/' + '/'.join(p.parts[1:])
 
 
+def normalized_mesh(source, scale):
+    lines = []
+    for line in Path(source).read_text(encoding='utf-8').splitlines():
+        fields = line.split()
+        if fields and fields[0] == 'v':
+            if len(fields) != 4:
+                raise ValueError('Expected XYZ-only OBJ vertices.')
+            line = 'v ' + ' '.join(format(float(x) * scale, '.17g') for x in fields[1:])
+        lines.append(line)
+    return '\n'.join(lines) + '\n'
+
+
+def robot_prerequisites(mapping, registry):
+    inverse = {name: part for part, name in mapping.items()}
+    if mapping.get('0') != 'base' or set(inverse) != {'base', *registry}:
+        raise ValueError('Planner part map does not match robot registry.')
+    return {'0': [], **{inverse[name]: [inverse[p] for p in entry['requires']]
+                        for name, entry in registry.items()}}
+
+
 def prepare_normalized(bundle, count=10, scale=100.):
     if type(count) is not int or not 2 <= count <= 10 or not np.isfinite(scale) or not 1 <= scale <= 1000:
         raise ValueError('Invalid product count or uniform length scale.')
     folder = Path(bundle)
     destination = folder / 'asap_normalized'
-    destination.mkdir()  # Never overwrite an earlier solver input or cache.
     config = read_json(folder / 'asap_input/config.json')
+    original = read_json(folder / 'planner_input_manifest.json')
+    layout = original.get('product_layout', 'four_post')
+    if layout not in LAYOUTS or count > len(config):
+        raise ValueError('Requested parts exceed the exported product layout.')
+    destination.mkdir()  # Never overwrite an earlier solver input or cache.
     selected = {str(i): deepcopy(config[str(i)]) for i in range(count)}
     for part, info in selected.items():
         info['final_state'] = (np.asarray(info['final_state']) * scale).tolist()
@@ -40,32 +64,28 @@ def prepare_normalized(bundle, count=10, scale=100.):
         # an explicit null is passed to len() by its current implementation.
         if info.get('initial_state') is None:
             info.pop('initial_state', None)
-        lines = []
-        for line in (folder / 'asap_input' / (part + '.obj')).read_text(encoding='utf-8').splitlines():
-            fields = line.split()
-            if fields and fields[0] == 'v':
-                if len(fields) != 4:
-                    raise ValueError('Expected XYZ-only OBJ vertices.')
-                line = 'v ' + ' '.join(format(float(x) * scale, '.17g') for x in fields[1:])
-            lines.append(line)
-        (destination / (part + '.obj')).write_text('\n'.join(lines) + '\n', encoding='utf-8')
+        source = folder / 'asap_input' / (part + '.obj')
+        (destination / (part + '.obj')).write_text(normalized_mesh(source, scale), encoding='utf-8')
     write_json(destination / 'config.json', selected)
     binding = read_json(folder / 'binding_template.json')
     binding['source_length_scale_m'] = 1. / scale
     binding['part_map'] = {key: binding['part_map'][key] for key in selected}
-    manifest = {'schema': 'asap_normalized_input/v1', 'length_scale_native_per_m': scale,
+    manifest = {'schema': 'asap_normalized_input/v1', 'product_layout': layout, 'length_scale_native_per_m': scale,
                 'source_length_scale_m': 1. / scale, 'count': count,
                 'units_note': 'Uniform geometric normalization only; native physical constants are unchanged.',
                 'binding': binding, 'input_sha256': {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
-                  for p in sorted(destination.iterdir())}, 'original_manifest': read_json(folder / 'planner_input_manifest.json')}
+                  for p in sorted(destination.iterdir())}, 'original_manifest': original}
     write_json(folder / 'normalization.json', manifest)
     return destination, manifest
 
 
-def assess_candidate(report, manifest, registry):
+def assess_candidate(report, manifest, registry, *, layout='four_post'):
     """Convert a complete native sequence only after conservative robot-scope checks."""
     errors, assembly = [], []
     mapping = manifest['binding']['part_map']
+    if layout not in LAYOUTS or any(record.get('product_layout', 'four_post') != layout for record in
+                                    (manifest, manifest['binding'], manifest.get('original_manifest', {}))):
+        errors.append('Native product layout does not match the selected assembly.')
     if report.get('schema') != 'asap_native_dfs/v1' or report.get('source_commit') != EXPECTED_COMMIT:
         errors.append('Unsupported native report schema/source revision.')
     if report.get('input_sha256') != manifest['input_sha256']:
@@ -107,15 +127,24 @@ def assess_candidate(report, manifest, registry):
             errors.append('Reversed sequence violates robot assembly prerequisites: ' + name)
         assembly.append(name)
         installed.add(name)
-    return {'schema': 'native_assembly_candidate/v1', 'status': 'candidate' if not errors else 'rejected',
+    return {'schema': 'native_assembly_candidate/v1', 'product_layout': layout, 'status': 'candidate' if not errors else 'rejected',
             'errors': errors, 'proposed_order': assembly, 'robot_execution_validated': False,
             'requires': ['current robot observations', 'grasp/IK/path checks', 'independent MuJoCo assembly verification']}
 
 
-def execute_native(*, count=3, timeout_s=120, budget=20, output_root=None, respect_robot_prerequisites=False):
+def execute_native(*, count=None, timeout_s=120, budget=20, output_root=None, respect_robot_prerequisites=False,
+                   layout='four_post'):
+    if layout not in LAYOUTS:
+        raise ValueError('Unknown planner product layout.')
+    if count is None:
+        count = 8 if layout == 'triangle_three_post' else 3
+    if type(count) is not int or not 2 <= count <= (8 if layout == 'triangle_three_post' else 10):
+        raise ValueError('Invalid number of parts for selected native layout.')
     if type(timeout_s) is not int or not 10 <= timeout_s <= 600 or type(budget) is not int or not 1 <= budget <= 100:
         raise ValueError('Native wall time/budget must be bounded.')
-    bundle = export_bundle(output_root or ROOT / 'runs/asap_native')
+    if layout == 'triangle_three_post' and count != 8:
+        raise ValueError('The triangle trial requires the complete eight-part product.')
+    bundle = export_bundle(output_root or ROOT / 'runs/asap_native', layout=layout)
     source, manifest = prepare_normalized(bundle, count)
     if type(respect_robot_prerequisites) is not bool:
         raise ValueError('The prerequisite-filter option must be boolean.')
@@ -126,28 +155,27 @@ def execute_native(*, count=3, timeout_s=120, budget=20, output_root=None, respe
                '--root', ASAP_ROOT, '--input', wsl_path(source), '--output', wsl_path(bundle / 'native_report.json'),
                '--budget', str(budget), '--timeout', str(timeout_s)]
     if respect_robot_prerequisites:
-        _, _, registry = build_frame_scene(count)
-        inverse = {name: part for part, name in manifest['binding']['part_map'].items()}
-        requires = {'0': [], **{inverse[name]: [inverse[p] for p in entry['requires']] for name, entry in registry.items()}}
+        _, _, registry = build_frame_scene(count, layout=layout)
+        requires = robot_prerequisites(manifest['binding']['part_map'], registry)
         path = bundle / 'robot_prerequisites.json'
         write_json(path, requires)
         manifest['candidate_constraints'] = {'source': 'developer_declared_robot_prerequisites', 'requires': requires,
                                             'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
         write_json(bundle / 'normalization.json', manifest)
         command.extend(['--robot-prerequisites', wsl_path(path)])
-    write_json(bundle / 'invocation.json', {'command': command, 'api_calls': 0,
+    write_json(bundle / 'invocation.json', {'command': command, 'api_calls': 0, 'product_layout': layout,
         'worker_sha256': hashlib.sha256((ROOT / 'scripts/asap_native_worker.py').read_bytes()).hexdigest(),
         'host_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest()})
     started = time.monotonic()
     with (bundle / 'native_stdout.log').open('w', encoding='utf-8') as stdout, (bundle / 'native_stderr.log').open('w', encoding='utf-8') as stderr:
         completed = subprocess.run(command, stdout=stdout, stderr=stderr, check=False)
-    result = {'exit_code': completed.returncode, 'api_calls': 0, 'run_dir': str(bundle),
+    result = {'exit_code': completed.returncode, 'product_layout': layout, 'api_calls': 0, 'run_dir': str(bundle),
               'wall_elapsed_s': time.monotonic() - started, 'status': 'incomplete',
               'robot_execution_validated': False}
     if completed.returncode == 0 and (bundle / 'native_report.json').is_file():
         report = read_json(bundle / 'native_report.json')
-        _, _, registry = build_frame_scene(count)
-        candidate = assess_candidate(report, manifest, registry)
+        _, _, registry = build_frame_scene(count, layout=layout)
+        candidate = assess_candidate(report, manifest, registry, layout=layout)
         candidate['source_report_sha256'] = hashlib.sha256((bundle / 'native_report.json').read_bytes()).hexdigest()
         write_json(bundle / 'assembly_candidate.json', candidate)
         native_status = ('incomplete' if report['stats']['stop_msg'] in ('exception', 'interrupt')
@@ -163,11 +191,12 @@ def execute_native(*, count=3, timeout_s=120, budget=20, output_root=None, respe
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--parts', type=int, default=3, choices=range(2, 11))
+    parser.add_argument('--parts', type=int, choices=range(2, 11))
+    parser.add_argument('--layout', choices=LAYOUTS, default='four_post')
     parser.add_argument('--timeout', type=int, default=120)
     parser.add_argument('--budget', type=int, default=20)
     parser.add_argument('--respect-robot-prerequisites', action='store_true', help='Use declared robot dependencies to prune removal candidates; not geometry-only discovery')
     args = parser.parse_args()
     result = execute_native(count=args.parts, timeout_s=args.timeout, budget=args.budget,
-                            respect_robot_prerequisites=args.respect_robot_prerequisites)
+                            respect_robot_prerequisites=args.respect_robot_prerequisites, layout=args.layout)
     raise SystemExit(0 if result['status'] == 'native_success' else 1)

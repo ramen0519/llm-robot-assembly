@@ -154,6 +154,10 @@ class FrameSkills(InsertionSkills):
 
     def observe(self, *, serialize=True):
         observation = super().observe(serialize=serialize)
+        entry = self.registry[self.active]
+        if entry['kind'] == 'cover':
+            observation['assembly_joint'].update(required_support_count=len(entry['support_ids']),
+                                                 required_support_ids=list(entry['support_ids']))
         observation['all_parts'] = {name: {'position_world_m': self.data.body(part_name(e['config'])).xpos.tolist(),
                                            'quaternion_wxyz': self.data.body(part_name(e['config'])).xquat.tolist(),
                                            'installed': name in self.installed}
@@ -174,6 +178,7 @@ class FrameSkills(InsertionSkills):
         if kind == 'cover':
             from post_grasp import unloaded_pad_reach_profile
             entry = self.registry[self.active]
+            supports = entry['support_ids']
             tab = self.model.geom(part_name(self.config) + '_grip_tab')
             plate_bottom = -packet['part_size_xyz_mm'][2] / 2
             plate_top = plate_bottom + 1000*dims['cover_height']
@@ -192,14 +197,15 @@ class FrameSkills(InsertionSkills):
                           tab_solid_z_range_mm=[round(float((tab.pos[2]-tab.size[2])*1000), 3),
                                                 round(float((tab.pos[2]+tab.size[2])*1000), 3)],
                           above_plate_geometry='Only the tab has opposed vertical faces above the perforated sheet. '
-                                               'Outside the four bores, the plate is solid between its bottom and top.',
+                                               'Outside the bores, the plate is solid between its bottom and top.',
                           tab_center_xyz_mm=(tab.pos * 1000).round(4).tolist(),
                           tab_size_xyz_mm=(tab.size * 2000).round(4).tolist(),
                           bore_centers_xyz_mm={k: (np.array(c)*1000).round(4).tolist()
                                                for k, c in entry['bore_centers_part_m'].items()},
                           square_bore_width_mm=1000*dims['hole_width'],
                           square_post_width_mm=1000*dims['post_width'],
-                          seating_surface='plate underside rests on the four sleeve tops; posts pass through respective holes',
+                          required_support_ids=list(supports), required_support_count=len(supports),
+                          seating_surface=f'plate underside rests on all {len(supports)} sleeve tops; posts pass through respective holes',
                           tcp_note='TCP is the midpoint between the two pads. The pads must close on opposed solid faces.')
             return packet
         post = next(name for name in self.registry[self.active]['requires'] if name != 'base')
@@ -348,10 +354,17 @@ class FrameSkills(InsertionSkills):
 
     def verify_cover_fit(self):
         entry = self.registry[self.active]
+        bores = entry['bore_centers_part_m']
+        supports = entry['support_ids']
+        if (not bores or not supports or len(bores) != len(supports)
+                or set(entry['requires']) != set(bores) | set(supports)
+                or not set(supports).issubset(self.installed)):
+            raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID,
+                               'Cover verification requires all declared mating posts and supporting sleeves.')
         thickness = self.verifier.joint['dimensions_m']['cover_height']
         fits = {name: self._measure_post_in_bore(name, np.asarray(center), thickness)
-                for name, center in entry['bore_centers_part_m'].items()}
-        forces = dict.fromkeys(entry['support_ids'], 0.)
+                for name, center in bores.items()}
+        forces = dict.fromkeys(supports, 0.)
         for index, c in enumerate(self.data.contact):
             pair = [self.verifier.geom_part.get(int(g)) for g in (c.geom1, c.geom2)]
             if self.active not in pair or c.dist > 0 or abs(c.frame[2]) <= .9:
@@ -362,7 +375,7 @@ class FrameSkills(InsertionSkills):
                 mujoco.mj_contactForce(self.model, self.data, index, force)
                 forces[other] += max(0., float(force[0])) * abs(float(c.frame[2]))
         if any(value <= .01 for value in forces.values()):
-            raise FailureEvent(FailureCode.PLACEMENT_NOT_CONFIRMED, 'Cover is not supported on all four sleeves.',
+            raise FailureEvent(FailureCode.PLACEMENT_NOT_CONFIRMED, f'Cover is not supported on all {len(supports)} sleeves.',
                                violations=[{'vertical_normal_load_n': forces}])
         return {'plate_thickness_mm': thickness*1000, 'bores': fits, 'vertical_normal_load_n': forces}
 
@@ -373,7 +386,11 @@ class FrameSkills(InsertionSkills):
             evidence['checks']['post_through_both_sleeve_openings'] = True
         elif self.registry[self.active]['kind'] == 'cover':
             evidence['cover_fit'] = self.verify_cover_fit()
-            evidence['checks'].update(four_posts_through_both_openings=True, four_sleeves_support_cover=True)
+            if len(evidence['cover_fit']['bores']) == 4:
+                # Four-post episodes retain their published verifier contract.
+                evidence['checks'].update(four_posts_through_both_openings=True, four_sleeves_support_cover=True)
+            else:
+                evidence['checks'].update(all_posts_through_both_openings=True, all_sleeves_support_cover=True)
         return evidence
 
     def insert(self, part_id, target_id, **kwargs):

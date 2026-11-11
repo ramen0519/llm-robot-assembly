@@ -12,12 +12,17 @@ from multi_post_scene import MULTI_DIMENSIONS
 from workcell_scene import ROOT, table_to_world, yaw_rotation
 
 
-def export_bundle(output_root=None):
+LAYOUTS = ('four_post', 'triangle_three_post')
+
+
+def export_bundle(output_root=None, *, layout='four_post'):
+    if layout not in LAYOUTS:
+        raise ValueError('Unknown planner product layout.')
     folder = TrialRecorder(output_root or ROOT / 'runs/planner_inputs').run_dir
-    product = export_product(folder / 'cad_local', MULTI_DIMENSIONS)
+    product = export_product(folder / 'cad_local', MULTI_DIMENSIONS, layout=layout)
     assembly = folder / 'asap_input'
     assembly.mkdir()
-    _, _, registry = build_frame_scene(10)
+    _, _, registry = build_frame_scene(len(product['parts']), layout=layout)
     config = next(iter(registry.values()))['config']
     world_from_product = np.eye(4)
     world_from_product[:3, :3] = yaw_rotation(config['table']['yaw_deg'])
@@ -41,13 +46,13 @@ def export_bundle(output_root=None):
         frame_map[name] = {'world_from_cad_m': world_from_cad, 'cad_from_robot_body_m': cad_from_body,
                            'world_from_robot_body_m': world_from_body}
     write_json(assembly / 'config.json', asap_config)
-    binding = {'schema_version': 1, 'source_report_sha256': None, 'source_length_scale_m': 1.,
+    binding = {'schema_version': 1, 'product_layout': layout, 'source_report_sha256': None, 'source_length_scale_m': 1.,
                'source_frame': 'product_base_bottom_center', 'world_from_source_m': world_from_product,
                'part_map': part_map, 'assembled_part_poses_world_m': poses,
                'assembled_part_pose_reference': 'CAD_local_part_frame',
                'robot_body_frame_mapping': frame_map}
     write_json(folder / 'binding_template.json', binding)
-    manifest = {'schema_version': 1, 'product_candidate': product['candidate_id'], 'dimensions_m': vars(MULTI_DIMENSIONS),
+    manifest = {'schema_version': 1, 'product_layout': layout, 'product_candidate': product['candidate_id'], 'dimensions_m': vars(MULTI_DIMENSIONS),
                 'units': 'metre', 'source_length_scale_m': 1., 'mesh_frame': 'local_part_CAD_frame',
                 'assembly_frame': 'product_base_bottom_center', 'fixed_base_source_id': '0', 'part_map': part_map,
                 'input_format': 'ASAP assets/load.py OBJ + config.json final_state translation',
@@ -64,5 +69,6 @@ def export_bundle(output_root=None):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output-root', type=Path)
+    parser.add_argument('--layout', choices=LAYOUTS, default='four_post')
     args = parser.parse_args()
-    export_bundle(args.output_root)
+    export_bundle(args.output_root, layout=args.layout)
