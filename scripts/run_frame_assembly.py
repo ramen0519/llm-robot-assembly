@@ -62,11 +62,42 @@ def episode_boundary(model, data, registry, installed):
             'simulator_version': mujoco.__version__, 'model_sha256': model_fingerprint(model)}
 
 
+def installation_sequence(registry, target_parts):
+    if target_parts is None:
+        return list(registry)
+    if not isinstance(target_parts, (list, tuple)) or not target_parts:
+        raise ValueError('Expected a nonempty ordered list of target parts.')
+    ready = {'base'}
+    for part in target_parts:
+        if part not in registry or part in ready or not set(registry[part]['requires']) <= ready:
+            raise ValueError(f'Unknown, repeated or out-of-order installation target: {part}')
+        ready.add(part)
+    return list(target_parts)
+
+
+def verify_interference_recovery(state, approach):
+    """The development scenario succeeds only if the selected skill supplied the executed grasp."""
+    trials = state['grasp_trials']
+    receipt = state.get('grasp_recovery_receipt') or {}
+    if (state['status'] != 'success' or state['completion_source'] != 'physics_verifier'
+            or state['completed'] != ['pick', 'insert'] or state.get('grasp_recovery_attempts') != 1
+            or receipt.get('selection_status') != 'selected' or not receipt.get('selected_id')
+            or len(trials) < 2 or trials[-2]['accepted'] is not False
+            or trials[-2].get('failure_code') != 'PLANNED_CONTACT'
+            or trials[-2].get('phase') != 'insert_lower/preflight'
+            or trials[-1]['accepted'] is not True or trials[-1]['grasp'] != receipt.get('proposed_grasp')
+            or trials[-1]['observation_revision'] != receipt.get('observation_revision')
+            or approach.get('proposed_grasp') != trials[-1]['grasp']):
+        raise ValueError('The development interference was not recovered with the selected and rechecked grasp.')
+
+
 def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='scripted', scenario='nominal', show_viewer=False,
                   transport_strategy='direct', transfer_obstacle=False, observer=None,
                   transport_replan_budget=0, empty_approach_strategy=None, policies=None, planner_candidate=None,
-                  post_sleeve_llm_config=None, llm_config=None, resume_run=None):
-    if mode not in ('scripted', 'single', 'roles') or scenario not in ('nominal', 'first_alignment_offset'):
+                  post_sleeve_llm_config=None, llm_config=None, resume_run=None,
+                  target_parts=None, grasp_skill_library=None):
+    trigger = scenario == 'first_post_grasp_interference'
+    if mode not in ('scripted', 'single', 'roles') or scenario not in ('nominal', 'first_alignment_offset', 'first_post_grasp_interference'):
         raise ValueError('Unknown orchestration mode/scenario')
     if mode == 'scripted' and scenario != 'nominal':
         raise ValueError('The first-alignment scenario requires a graph mode')
@@ -82,6 +113,10 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
         raise ValueError('Unknown empty-gripper approach strategy.')
     live_pair = post_sleeve_llm_config is not None
     live = live_pair or llm_config is not None
+    if (target_parts is not None or grasp_skill_library is not None) and (llm_config is None or resume_run is not None):
+        raise ValueError('Targeted live assembly and grasp recovery require a fresh single-policy frame episode.')
+    if trigger and (grasp_skill_library is None or product_count != 10):
+        raise ValueError('The first-post interference case requires its verified library and ten-part scene.')
     if resume_run is not None and (llm_config is None or scenario != 'nominal'):
         raise ValueError('Resume requires the full live single-policy nominal frame.')
     if llm_config is not None and (live_pair or mode != 'single' or policies is not None or planner_candidate is not None):
@@ -103,6 +138,7 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
     client, ledger = None, None
     part_episodes, final_verification = {}, None
     previous_end = None
+    library, library_info, sequence = None, None, None
     parent, resume, segment_installed = None, None, []
     track_metrics = (live or transport_strategy != 'direct' or transfer_obstacle or transport_replan_budget
                      or empty_approach_strategy == 'direct_then_rrt')
@@ -121,6 +157,18 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
             from planner_candidate_input import load_robot_candidate
             order, planner_provenance = load_robot_candidate(planner_candidate, registry)
             registry = {name: registry[name] for name in order}
+        sequence = installation_sequence(registry, target_parts)
+        if trigger and sequence[0] != 'post_1':
+            raise ValueError('The interference scenario must start with post_1.')
+        if grasp_skill_library is not None:
+            from grasp_skill_library import SkillLibrary
+            from grasp_preflight_trace import RecordedFrameSkills
+            from graph_grasp_recovery import DevelopmentFirstGrasp, GraphGraspRecovery
+            if config.model != 'gpt-6-astra' or config.reasoning_effort != 'high':
+                raise ValueError('The verified skill selector requires the Astra high profile.')
+            library = SkillLibrary(grasp_skill_library)
+            library_info = {'snapshot_id': library.snapshot_id, 'document_count': library.document_count,
+                            'skill_count': library.skill_count}
         if resume_run is not None:
             from frame_resume import prepare_resume, carry_accounting, copy_prefix_artifacts
             options = {'product_parts_present': product_count, 'scenario': scenario,
@@ -149,10 +197,13 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
                 carry_accounting(ledger, parent, resume_run)
             client = create_openai_client(config)
             policies = {'single': OpenAIAssemblyPolicy(config, client, ledger)}
+            if trigger:
+                policies['single'] = DevelopmentFirstGrasp(policies['single'])
         write_json(recorder.run_dir / 'resolved_config.json', {
             'registry': registry, 'environment': 'simulation', 'observation_source': 'sim_ground_truth',
             'planner_provenance': planner_provenance,
-            'product_parts_present': product_count, 'robot_installations_goal': product_count - 1,
+            'product_parts_present': product_count, 'robot_installations_goal': len(sequence),
+            **({'grasp_skill_library': library_info, 'fixed_first_grasp_trigger': trigger} if library else {}),
             'transport_strategy': transport_strategy, 'transfer_obstacle': transfer_obstacle,
             'empty_approach_strategy': empty_approach_strategy,
             'transport_replan_budget': transport_replan_budget, 'transport_replan_budget_scope': 'episode',
@@ -162,13 +213,15 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
             'recovery_budget': remaining_recoveries, 'simulator_version': mujoco.__version__,
             'diagnostic_interval_s': recorder.diagnostic_interval_s, 'resume': resume,
             **({'llm_config': config.public(), 'api_calls_at_start': ledger.model_requests, 'initial_installed': sorted(installed),
-                'sequence': list(registry)} if live else {'api_calls': 0}),
+                'sequence': sequence} if live else {'api_calls': 0}),
             'implementation_sha256': {name: hashlib.sha256((ROOT / 'scripts' / name).read_bytes()).hexdigest()
                 for name in ('frame_assembly_scene.py', 'frame_assembly_skills.py', 'workcell_motion.py', 'run_frame_assembly.py',
                              'insertion_scene.py', 'insertion_skills.py', 'loaded_transport.py', 'joint_path_planner.py', 'empty_approach.py',
                              'assembly_graph.py', 'assembly_policy.py', 'rejected_insert.py', 'planner_candidate_input.py',
                              'assembly_skills.py', 'post_grasp.py', 'openai_policy.py', 'llm_runtime.py', 'insertion_recovery.py', 'frame_product.py',
-                             'frame_resume.py', 'run_pick_place.py')}})
+                             'frame_resume.py', 'run_pick_place.py') + (('graph_grasp_recovery.py',
+                             'grasp_skill_library.py', 'grasp_skill_runtime.py', 'grasp_skill_selector.py',
+                             'grasp_preflight_trace.py') if library else ())}})
         viewer_context = mujoco.viewer.launch_passive(model, data) if show_viewer else nullcontext(None)
         with viewer_context as viewer, recorder.trace_path.open('a' if resume else 'w', newline='', encoding='utf-8') as stream, (recorder.run_dir / 'graph_events.jsonl').open('a' if resume else 'w', encoding='utf-8') as events:
             clock = {'last_draw': -1., 'wall': time.monotonic(), 'sim': float(data.time)}
@@ -214,14 +267,21 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
                 motion_preflight_failures.append(report)
                 write_json(recorder.run_dir / f'motion_preflight_{len(motion_preflight_failures):03d}.json', report)
                 write_json(recorder.run_dir / 'failure_report.json', report)
-            for active, entry in registry.items():
+            for active in sequence:
+                entry = registry[active]
                 if active in installed:
                     continue
                 part_metrics.setdefault(active, {'verified_samples': 0, 'transport_samples': 0,
                     'maximum_transport_slip_m': 0., 'maximum_transport_tilt_rad': 0.,
                     'previous_parts': {name: {'maximum_position_error_m': 0., 'maximum_orientation_error_rad': 0.}
                                        for name in installed}})
-                skills = FrameSkills(model, data, active, registry, installed, sample, stage,
+                recovery = None
+                skills_type = FrameSkills
+                if library is not None and active == 'post_1':
+                    recovery = GraphGraspRecovery(library, config, client, ledger,
+                        recorder.run_dir / 'grasp_recovery' / active, recorder.run_dir.name + '-' + active)
+                    skills_type = RecordedFrameSkills
+                skills = skills_type(model, data, active, registry, installed, sample, stage,
                     transport_strategy=transport_strategy, on_transport_preflight_failure=transport_failure,
                     empty_approach_strategy=empty_approach_strategy)
                 transport_attempts[active] = skills.transport_attempts
@@ -270,6 +330,7 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
                     state = run_assembly_graph(skills, failure_handler=failure_handler, mode=mode, policies=policies,
                         scenario='alignment_offset' if scenario == 'first_alignment_offset' and active == 'post_1' else 'nominal',
                         recovery_budget=remaining_recoveries, on_event=event,
+                        grasp_recovery=recovery,
                         transport_replan_budget=min(1, replans_at_part_start),
                         task_id='four_post_frame_wide/' + active, insert_result_skill=expected, propose_grasp=live, finish_on_verified_insert=live,
                         retry_history=parent['graph_states'][active] if resume and active == resume['active_part'] else None)
@@ -278,6 +339,8 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
                     if state['status'] != 'success':
                         status, error = state['status'], state['error']
                         break
+                    if trigger and active == 'post_1':
+                        verify_interference_recovery(state, skills.results[0])
                     result = skills.results[-1]
                 installed.add(active)
                 segment_installed.append(active)
@@ -288,7 +351,7 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
                                                  api_calls_at_end=ledger.model_requests)
                     write_json(recorder.run_dir / 'progress.json', {
                         'status': 'running', 'resume': resume, 'completed_installations': sorted(installed),
-                        'next_parts': [name for name in registry if name not in installed],
+                        'next_parts': [name for name in sequence if name not in installed],
                         'part_episodes': part_episodes, 'results': results, 'graph_states': graph_states,
                         'recovery_budget_remaining': remaining_recoveries,
                         'transport_replan_budget_remaining': remaining_replans, 'llm_usage': ledger.summary()})
@@ -334,14 +397,15 @@ def execute_trial(*, product_count=6, snapshots=False, output_root=None, mode='s
         except Exception as exc:
             terminal_checkpoint = None
             checkpoint_error = type(exc).__name__
-    checkpoint = (terminal_checkpoint if status == 'stopped'
+    checkpoint = (terminal_checkpoint if status == 'stopped' and target_parts is None and grasp_skill_library is None
                   and error == 'Grasp proposal budget exhausted before pick.' else None)
     segment_elapsed = time.monotonic() - wall_started
     result = {'status': status, 'error': error, 'run_dir': str(recorder.run_dir),
               'planner_provenance': planner_provenance, 'execution_order': [r['part_id'] for r in results],
-              'product_parts_present': product_count, 'robot_installations_goal': product_count - 1,
+              'product_parts_present': product_count, 'robot_installations_goal': len(sequence) if sequence is not None else None,
+              'requested_sequence': sequence, **({'grasp_skill_library': library_info, 'scenario': scenario} if library else {}),
               'completed_installations': sorted(installed), 'robot_installed_parts': len(installed),
-              'ten_part_assembly_complete': status == 'success' and product_count == 10,
+              'ten_part_assembly_complete': status == 'success' and product_count == 10 and len(installed) == 9,
               'results': results, 'observation': skills.observe() if skills else None,
               'samples': recorder.samples, 'simulated_seconds': float(skills.data.time) if skills else None,
               'graph_states': graph_states, 'failures': failures, 'orchestration': mode,
@@ -384,12 +448,15 @@ if __name__ == '__main__':
     parser.add_argument('--transport-replan-budget', type=int, choices=range(10), default=0, help='Global episode budget; graph mode and at most one replan per installation')
     parser.add_argument('--viewer', action='store_true', help='Open the passive MuJoCo viewer for this physical episode')
     parser.add_argument('--mode', choices=['scripted', 'single', 'roles'], default='scripted')
-    parser.add_argument('--scenario', choices=['nominal', 'first_alignment_offset'], default='nominal')
+    parser.add_argument('--scenario', choices=['nominal', 'first_alignment_offset', 'first_post_grasp_interference'], default='nominal')
+    parser.add_argument('--target-parts', nargs='+', help='Ordered installation goals in the unchanged full scene')
+    parser.add_argument('--grasp-skill-library', type=Path, help='Frozen catalogue for measured first-post interference')
     parser.add_argument('--planner-candidate', type=Path, help='Native candidate whose CAD, frames and evidence are rechecked before motion')
     args = parser.parse_args()
     result = execute_trial(product_count=args.parts, snapshots=args.snapshots, mode=args.mode, scenario=args.scenario,
         show_viewer=args.viewer, transport_strategy=args.transport_strategy, transfer_obstacle=args.transfer_obstacle,
         empty_approach_strategy=args.empty_approach_strategy, transport_replan_budget=args.transport_replan_budget,
         planner_candidate=args.planner_candidate, post_sleeve_llm_config=args.post_sleeve_llm_config,
-        llm_config=args.llm_config, resume_run=args.resume_run)
+        llm_config=args.llm_config, resume_run=args.resume_run, target_parts=args.target_parts,
+        grasp_skill_library=args.grasp_skill_library)
     raise SystemExit(0 if result['status'] == 'success' else 1)

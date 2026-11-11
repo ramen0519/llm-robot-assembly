@@ -47,24 +47,29 @@ def _operation(body):
     return calls[0]['name'], _decode(calls[0]['arguments'])
 
 
-def select_skill(query, library, *, config, log_dir, client=None):
-    """Free choice within the searchable snapshot. Injected client is for isolated tests."""
+def select_skill(query, library, *, config, log_dir, client=None, shared_ledger=None):
+    """Search for at most four rounds, charging the active episode when supplied."""
     folder = Path(log_dir)
     folder.mkdir(parents=True,exist_ok=True)
     config.validate(live=True)
-    if config.model != 'gpt-6-astra' or config.reasoning_effort != 'high' or config.max_model_requests > 4:
+    if (config.model != 'gpt-6-astra' or config.reasoning_effort != 'high'
+            or (shared_ledger is None and config.max_model_requests > 4)):
         raise ValueError('Expected the bounded Astra high reuse profile.')
-    fixture = client is not None
+    if shared_ledger is not None and (client is None or shared_ledger.config != config):
+        raise ValueError('Shared selection needs the episode client and matching accounting profile.')
+    fixture = client is not None and shared_ledger is None
     events, hits, read_skills = [], set(), set()
     result = {'status':'error','selected_id':None,'events':events,'ledger':None,'API_calls':0,
               'snapshot_id':library.snapshot_id,'transport':'fixture' if fixture else 'openai_responses'}
-    ledger = ApiLedger(config, folder/'api_events.jsonl')
+    ledger = shared_ledger if shared_ledger is not None else ApiLedger(config, folder/'api_events.jsonl')
+    start_calls = ledger.model_requests
+    rounds = min(4, config.max_model_requests - max(start_calls, ledger.count_requests))
     stage = 'client'
     try:
-        api = client if fixture else create_openai_client(config)
-        for turn in range(config.max_model_requests):
+        api = client if client is not None else create_openai_client(config)
+        for turn in range(rounds):
             stage = 'prepare'
-            request = _request(config,query,events,hits,read_skills,config.max_model_requests-turn)
+            request = _request(config,query,events,hits,read_skills,rounds-turn)
             full = {**request,'max_output_tokens':config.max_output_tokens,'store':False,'service_tier':'default'}
             _write_json(folder/f'request_{turn+1}.json',full)
             stage = 'count'
@@ -112,9 +117,16 @@ def select_skill(query, library, *, config, log_dir, client=None):
     except (Exception, KeyboardInterrupt) as exc:
         result['status']='error'
         result['error']={'stage':stage,'type':type(exc).__name__}
+        if shared_ledger is not None:
+            ledger.halted = True
+            ledger.record('skill_search_failed', stage=stage, error_type=type(exc).__name__,
+                          usage_unknown=ledger.unknown_requests > 0)
     finally:
         summary = ledger.summary()
         result['simulated_ledger' if fixture else 'ledger']=summary
-        result['API_calls']=0 if fixture else ledger.model_requests
+        result['API_calls']=0 if fixture else ledger.model_requests - start_calls
+        if shared_ledger is not None:
+            result.update(ledger_scope='episode', episode_calls_before=start_calls,
+                          episode_calls_after=ledger.model_requests)
         _write_json(folder/'result.json',result)
     return result

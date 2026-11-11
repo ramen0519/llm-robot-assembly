@@ -29,11 +29,24 @@ class AssemblyState(TypedDict):
     experiences: list[dict]
     grasp_trials: list[dict]
     completion_source: str | None
+    grasp_recovery_due: bool
+    grasp_recovery_attempts: int
+    grasp_recovery_receipt: dict | None
+
+
+def _compact_trial(trial):
+    """Retain detector results without copying the whole trace into prompts/events."""
+    compact = {key: value for key, value in trial.items() if key not in ('trace_paths', 'trace_summary')}
+    if isinstance(trial.get('trace_summary'), dict):
+        summary = trial['trace_summary']
+        compact['trace_summary'] = {key: summary[key] for key in ('pick_completed', 'trace_complete', 'sample_count')
+                                    if key in summary}
+    return compact
 
 
 def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, on_event=None,
                        scenario='nominal', recovery_budget=1, memory_lookup=None,
-                       task_id='four_post_frame_first_joint/v1', insert_result_skill='insert_post/v1', condition_fingerprint=None, transport_replan_budget=0, recipe_summaries=None, propose_grasp=False, retry_history=None, finish_on_verified_insert=False):
+                       task_id='four_post_frame_first_joint/v1', insert_result_skill='insert_post/v1', condition_fingerprint=None, transport_replan_budget=0, recipe_summaries=None, propose_grasp=False, retry_history=None, finish_on_verified_insert=False, grasp_recovery=None):
     from post_grasp import MAX_PROPOSALS
     prior = deepcopy(retry_history)
     if prior is not None and (mode != 'single' or not propose_grasp or scenario != 'nominal'
@@ -63,6 +76,14 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
                'verification': None, 'failures': [], 'pending_failure': None, 'recoveries': 0, 'transport_replans': 0,
                'policy_calls': 0, 'policy_mode': mode, 'error': None, 'experiences': [], 'grasp_trials': [], 'completion_source': None}
     fault_injected = False
+    if grasp_recovery is not None:
+        if not propose_grasp or not all(callable(getattr(grasp_recovery, key, None)) for key in ('check', 'eligible', 'recover')):
+            raise ValueError('Grasp recovery requires proposed grasps and a check/eligible/recover adapter.')
+        attempts = (prior or {}).get('grasp_recovery_attempts', 0)
+        if type(attempts) is not int or attempts not in (0, 1):
+            raise ValueError('Invalid prior grasp recovery count.')
+        initial.update(grasp_recovery_due=False, grasp_recovery_attempts=attempts,
+                       grasp_recovery_receipt=(prior or {}).get('grasp_recovery_receipt'))
     if prior:
         initial.update(grasp_trials=prior['grasp_trials'], policy_calls=prior['policy_calls'],
                        observation_revision=prior['observation_revision'])
@@ -76,8 +97,18 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
         experiences = memory_lookup(state['pending_failure']) if memory_lookup else []
         if not isinstance(experiences, list) or len(experiences) > 3:
             raise ValueError('Memory lookup must return at most three experience summaries.')
-        return {'observation': _snapshot(skills), 'observation_revision': state['observation_revision'] + 1, 'experiences': json_safe(experiences),
-                'active_role': 'recovery' if state['pending_failure'] else 'assembly'}
+        update = {'observation': _snapshot(skills), 'observation_revision': state['observation_revision'] + 1,
+                  'experiences': json_safe(experiences), 'active_role': 'recovery' if state['pending_failure'] else 'assembly'}
+        if grasp_recovery is not None:
+            update['grasp_recovery_due'] = False
+            trials = state['grasp_trials']
+            if (trials and trials[-1]['accepted'] is False and not state['completed'] and not state['pending_failure']
+                    and state['grasp_recovery_attempts'] == 0 and len(trials) < trial_limit):
+                eligible = grasp_recovery.eligible(skills, deepcopy({**state, **update}))
+                if type(eligible) is not bool:
+                    raise ValueError('Expected a boolean grasp recovery eligibility result.')
+                update['grasp_recovery_due'] = eligible
+        return update
 
     def decide(state):
         role = 'single' if mode == 'single' else state['active_role']
@@ -98,7 +129,9 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
         if 'recover_alignment' in context['allowed_skills']:
             context['alignment_observation'] = alignment_observation(skills)
         if propose_grasp and 'pick' in context['allowed_skills']:
-            context['grasp_task'] = {'geometry': skills.grasp_geometry(), 'previous_trials': state['grasp_trials'],
+            previous = ([_compact_trial(trial) for trial in state['grasp_trials']]
+                        if grasp_recovery is not None else state['grasp_trials'])
+            context['grasp_task'] = {'geometry': skills.grasp_geometry(), 'previous_trials': previous,
                                      'attempts_remaining': trial_limit - len(state['grasp_trials'])}
         proposal = validate_proposal(policies[role].propose(deepcopy(context)), context)
         return {'action': proposal, 'policy_calls': state['policy_calls'] + 1,
@@ -108,12 +141,43 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
         action = state['action']
         if state['observation'] != _snapshot(skills) or action['observation_revision'] != state['observation_revision']:
             raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, 'Observation changed before grasp preflight.')
-        trial = skills.check_grasp(action['grasp'])
-        trial['observation_revision'] = state['observation_revision']
+        if grasp_recovery is None:
+            trial = skills.check_grasp(action['grasp'])
+            trial['observation_revision'] = state['observation_revision']
+        else:
+            trial = grasp_recovery.check(skills, deepcopy(state), deepcopy(action))
+            if (not isinstance(trial, dict) or type(trial.get('accepted')) is not bool
+                    or trial.get('grasp') != action['grasp'] or type(trial.get('observation_revision')) is not int
+                    or trial['observation_revision'] != state['observation_revision']):
+                raise ValueError('Adapter check returned a mismatched grasp or observation revision.')
         trials = [*state['grasp_trials'], trial]
         if not trial['accepted'] and len(trials) >= trial_limit:
             return {'grasp_trials': trials, 'status': 'stopped', 'error': 'Grasp proposal budget exhausted before pick.'}
         return {'grasp_trials': trials}
+
+    def recover_grasp(state):
+        if (not state['grasp_recovery_due'] or state['grasp_recovery_attempts'] != 0
+                or state['completed'] or state['pending_failure'] or not state['grasp_trials']
+                or state['grasp_trials'][-1]['accepted'] is not False
+                or state['grasp_trials'][-1]['observation_revision'] >= state['observation_revision']
+                or state['observation'] != _snapshot(skills)):
+            raise ValueError('Recovery requires a fresh observation after an eligible rejection.')
+        decision = grasp_recovery.recover(skills, deepcopy(state))
+        if (not isinstance(decision, dict) or decision.get('status') not in ('proposed', 'abstained')
+                or not isinstance(decision.get('receipt'), dict) or state['observation'] != _snapshot(skills)):
+            raise ValueError('Invalid recovery decision or the observed scene changed during recovery.')
+        proposed = decision['status'] == 'proposed'
+        context = {'allowed_skills': ['pick', 'stop'], 'part_id': skills.config['part']['id'],
+                   'target_id': skills.config['target']['id'], 'observation_revision': state['observation_revision'],
+                   'grasp_task': {}}
+        action = validate_proposal({'skill': 'pick' if proposed else 'stop', 'part_id': context['part_id'],
+            'target_id': context['target_id'], 'observation_revision': context['observation_revision'],
+            'grasp': decision.get('grasp'), 'reason': decision['reason']}, context)
+        update = {'action': action, 'last_result': None, 'verification': None, 'grasp_recovery_due': False,
+                  'grasp_recovery_receipt': deepcopy(decision['receipt'])}
+        if not proposed:
+            update.update(status='stopped', error=decision['reason'])
+        return update
 
     def execute(state):
         nonlocal fault_injected
@@ -203,12 +267,22 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
                 update['transport_replans'] = state['transport_replans'] + 1
             if name == 'decide' and 'policy_calls' not in update:
                 update['policy_calls'] = state['policy_calls'] + 1  # Failed attempts also count.
+            if name == 'recover_grasp':
+                update['grasp_recovery_attempts'] = state['grasp_recovery_attempts'] + 1
             current = {**state, **update}
             if on_event:
+                extra = {}
+                if name == 'check_grasp' and update.get('grasp_trials'):
+                    trial = current['grasp_trials'][-1]
+                    extra['grasp_trial'] = _compact_trial(trial) if grasp_recovery is not None else trial
+                    if grasp_recovery is not None and trial.get('trace_paths', {}).get('terminal'):
+                        extra['grasp_trial_trace'] = trial['trace_paths']['terminal']
+                if name == 'recover_grasp':
+                    extra.update(grasp_recovery_attempts=current['grasp_recovery_attempts'],
+                                 grasp_recovery_receipt=current.get('grasp_recovery_receipt'))
                 on_event(json_safe({'node': name, 'status': current['status'], 'active_role': current['active_role'],
                                    'observation_revision': current['observation_revision'], 'action': current['action'],
-                                   **({'grasp_trial': current['grasp_trials'][-1]}
-                                      if name == 'check_grasp' and update.get('grasp_trials') else {}),
+                                   **extra,
                                    'completed': current['completed'], 'completion_source': current['completion_source'],
                                    'recoveries': current['recoveries'],
                                    'transport_replans': current['transport_replans'],
@@ -222,9 +296,19 @@ def run_assembly_graph(skills, *, failure_handler, mode='roles', policies=None, 
     for name, function in [('settle', settle), ('observe', observe), ('decide', decide), ('execute', execute), ('verify', verify)]:
         graph.add_node(name, guarded(name, function))
     graph.add_node('check_grasp', guarded('check_grasp', check_grasp))
+    if grasp_recovery is not None:
+        graph.add_node('recover_grasp', guarded('recover_grasp', recover_grasp))
+        graph.add_conditional_edges('recover_grasp', lambda state: 'check_grasp' if state['status'] == 'running' else END,
+                                    ['check_grasp', END])
     graph.add_edge(START, 'settle')
-    for source, target in [('settle', 'observe'), ('observe', 'decide'), ('verify', 'observe')]:
+    for source, target in [('settle', 'observe'), ('verify', 'observe')]:
         graph.add_conditional_edges(source, lambda state, target=target: target if state['status'] == 'running' else END, [target, END])
+    def route_observation(state):
+        if state['status'] != 'running':
+            return END
+        return 'recover_grasp' if grasp_recovery is not None and state['grasp_recovery_due'] else 'decide'
+    graph.add_conditional_edges('observe', route_observation,
+                                ['decide', 'recover_grasp', END] if grasp_recovery is not None else ['decide', END])
     graph.add_conditional_edges('decide', lambda s: END if s['status'] != 'running' else (
         'check_grasp' if propose_grasp and s['action']['skill'] == 'pick' else 'execute'), ['check_grasp', 'execute', END])
     graph.add_conditional_edges('check_grasp', lambda s: END if s['status'] != 'running' else (
