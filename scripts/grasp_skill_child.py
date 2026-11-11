@@ -91,6 +91,10 @@ def decode_json(raw, *, max_bytes=MAX_INPUT_BYTES):
 
 def checked_request(value):
     required = {'schema', 'source', 'context', 'max_steps', 'code_sha256', 'input_sha256'}
+    if type(value) is dict and 'context_version' in value:
+        if type(value['context_version']) is not int or value['context_version'] != 2:
+            raise ValueError('Unsupported version of the grasp context.')
+        required.add('context_version')
     if type(value) is not dict or set(value) != required or value['schema'] != PROTOCOL:
         raise ValueError('request_schema')
     source = value['source']
@@ -136,7 +140,7 @@ def run_payload(payload, validator_dir):
         if (Path(validator_module.__file__).resolve() != validator_path.resolve()
                 or Path(vm_module.__file__).resolve() != (vendor_dir / 'python_skill_vm.py').resolve()):
             raise ValueError('trusted_module_path_mismatch')
-        validator_module.inspect_source(source)
+        validator_module.inspect_source(source, context_version=payload.get('context_version', 1))
 
         def deny_eligible(value):
             raise vm_module.PolicyError('eligible_forbidden')

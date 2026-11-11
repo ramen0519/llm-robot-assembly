@@ -18,6 +18,8 @@ TOOL_NAME = 'propose_assembly_skill_candidate'
 GRASP_FIELDS = ('x_mm', 'y_mm', 'z_mm', 'jaw_yaw_deg')
 CONTEXT_FIELDS = ('part_size_xyz_mm', 'previous_grasp', 'failure_code', 'failure_phase',
                   'holding_part', 'observation_is_current', 'remaining_proposals')
+REVISION_FIELDS = ('predicted_pad_to_rim_clearance_mm', 'pad_contacts_socket_wall',
+                   'pick_completed_in_copy')
 FIELDS = {'decision', 'title', 'rationale', 'source_code', 'lesson_ids',
           'supporting_fact_ids', 'reviewed_fact_ids', 'applicability_notes',
           'exclusion_notes', 'limitations'}
@@ -100,8 +102,11 @@ def validate_input(packet, *, memory_dir=None):
             raise ValueError('Source lesson changed or disappeared.')
 
 
-def inspect_source(source):
+def inspect_source(source, *, context_version=1):
     """Static allowlist only. This is NOT a VM or proof of safe/correct execution."""
+    if type(context_version) is not int or context_version not in (1, 2):
+        raise ValueError('Unsupported grasp context version.')
+    allowed_fields = CONTEXT_FIELDS if context_version == 1 else CONTEXT_FIELDS + REVISION_FIELDS
     if not isinstance(source, str) or not source.strip() or len(source.encode('utf-8')) > 16384:
         raise ValueError('Missing or excessive Python source.')
     try:
@@ -122,6 +127,26 @@ def inspect_source(source):
         ast.BinOp, ast.UnaryOp, ast.BoolOp, ast.Compare, ast.IfExp, ast.Call,
         ast.Add, ast.Sub, ast.Mult, ast.Div, ast.UAdd, ast.USub, ast.Not, ast.And, ast.Or,
         ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE, ast.Is, ast.IsNot)
+    if context_version == 2:
+        # The shared VM already implements membership. Permit only presence tests
+        # for documented keys of ctx or an unmodified alias for its previous grasp.
+        allowed += (ast.In, ast.NotIn)
+        writes = [n for n in nodes if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)]
+        grasp_aliases = {
+            n.targets[0].id for n in nodes if isinstance(n, ast.Assign)
+            and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name)
+            and sum(w.id == n.targets[0].id for w in writes) == 1
+            and isinstance(n.value, ast.Subscript) and isinstance(n.value.value, ast.Name)
+            and n.value.value.id == 'ctx' and isinstance(n.value.slice, ast.Constant)
+            and n.value.slice.value == 'previous_grasp'}
+        for n in nodes:
+            if isinstance(n, ast.Compare) and any(isinstance(op, (ast.In, ast.NotIn)) for op in n.ops):
+                receiver = n.comparators[0]
+                keys = (allowed_fields if isinstance(receiver, ast.Name) and receiver.id == 'ctx'
+                        else GRASP_FIELDS if isinstance(receiver, ast.Name) and receiver.id in grasp_aliases
+                        else ())
+                if len(n.ops) != 1 or not isinstance(n.left, ast.Constant) or n.left.value not in keys:
+                    raise ValueError('Only a literal declared key may be tested on a grasp input dictionary.')
     locals_ = set()
     fields = set()
     returns = []
@@ -148,7 +173,7 @@ def inspect_source(source):
             if not isinstance(index, ast.Constant) or type(index.value) not in (str, int):
                 raise ValueError('Only literal keys and indices are allowed.')
             if isinstance(node.value, ast.Name) and node.value.id == 'ctx':
-                if index.value not in CONTEXT_FIELDS:
+                if index.value not in allowed_fields:
                     raise ValueError('Unknown context field.')
                 fields.add(index.value)
         if isinstance(node, ast.Call):

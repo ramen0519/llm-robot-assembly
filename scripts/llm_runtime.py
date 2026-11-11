@@ -50,9 +50,10 @@ class LlmConfig:
             value = getattr(self, name)
             if type(value) is not int or not 1 <= value <= maximum:
                 raise ValueError('Invalid token/request limit: ' + name)
+        timeout_limit = 180 if self.model == 'gpt-6-astra' and self.reasoning_effort == 'high' else 60
         if (type(self.timeout_seconds) not in (int, float) or not math.isfinite(self.timeout_seconds)
-                or not 1 <= self.timeout_seconds <= 60):
-            raise ValueError('Timeout must be between 1 and 60 seconds.')
+                or not 1 <= self.timeout_seconds <= timeout_limit):
+            raise ValueError(f'Timeout must be between 1 and {timeout_limit} seconds.')
         if self.reasoning_effort not in ('', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'):
             raise ValueError('Unknown reasoning effort; model support must be checked separately.')
         for name in ('max_cost_usd', 'input_usd_per_million', 'output_usd_per_million',

@@ -93,7 +93,7 @@ def compare_trials(baseline, modified):
 
 
 def preflight_candidate(skills, candidate, observation, *, current_reader, rejection,
-                        remaining_proposals, log_dir, memory_dir=DEFAULT_OUTPUT):
+                        remaining_proposals, log_dir, memory_dir=DEFAULT_OUTPUT, revision=None):
     """Only a fresh, bound VM proposal reaches the existing simulator checker."""
     folder = Path(log_dir)
     folder.mkdir(parents=True, exist_ok=False)
@@ -114,8 +114,9 @@ def preflight_candidate(skills, candidate, observation, *, current_reader, rejec
         if executor_observation() != observation:
             raise ValueError('Observation belongs to a different executor scene.')
         validate_candidate(candidate, memory_dir=memory_dir)
+        revision_option = {} if revision is None else {'revision': revision}
         evaluation = evaluate_candidate(candidate, observation, current_reader=current_reader,
-            rejection=rejection, remaining_proposals=remaining_proposals, memory_dir=memory_dir)
+            rejection=rejection, remaining_proposals=remaining_proposals, memory_dir=memory_dir, **revision_option)
         result['evaluation'] = evaluation
         _write_json(folder / 'evaluation.json', evaluation)
         if evaluation['status'] != 'proposed':
@@ -123,7 +124,9 @@ def preflight_candidate(skills, candidate, observation, *, current_reader, rejec
             return result
         proposal = evaluation['proposal']
         context = observation['condition_context']['config']
-        expected = {'candidate_id': candidate['candidate_id'], 'code_sha256': candidate['code_sha256'],
+        active_id = candidate['candidate_id'] if revision is None else revision['revision_id']
+        active_hash = candidate['code_sha256'] if revision is None else revision['code_sha256']
+        expected = {'candidate_id': active_id, 'code_sha256': active_hash,
             'observation_id': observation['observation_id'], 'observation_revision': observation['revision'],
             'episode_id': observation['episode_id'], 'part_id': context['part']['id'],
             'target_id': context['target']['id'], 'rejection_id': rejection['rejection_id'],

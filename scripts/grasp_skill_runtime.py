@@ -132,7 +132,7 @@ def _scope_matches(candidate, obs):
 
 def evaluate_candidate(candidate, observation, *, current_reader, rejection,
                        remaining_proposals, memory_dir=DEFAULT_OUTPUT,
-                       max_steps=1000, timeout_s=3.0):
+                       max_steps=1000, timeout_s=3.0, revision=None):
     """Proposal-only calculation; current_reader is a trusted host callback.
 
     The host serializes scene access and owns revisions, failure bindings and
@@ -149,6 +149,13 @@ def evaluate_candidate(candidate, observation, *, current_reader, rejection,
     stage = 'candidate_validation'
     try:
         validate_candidate(candidate, memory_dir=memory_dir)
+        source = candidate['source_code']
+        if revision is not None:
+            from grasp_revision_generation import validate_revision
+            validate_revision(revision, candidate)
+            source = revision['source_code']
+            result.update(candidate_id=revision['revision_id'], code_sha256=revision['code_sha256'],
+                          parent_candidate_id=candidate['candidate_id'], context_version=2)
         stage = 'observation_validation'
         validate_observation(observation)
         stage = 'current_observation_read'
@@ -202,9 +209,15 @@ def evaluate_candidate(candidate, observation, *, current_reader, rejection,
             'previous_grasp': deepcopy(trial['grasp']), 'failure_code': trial['failure_code'],
             'failure_phase': trial['phase'], 'holding_part': False,
             'observation_is_current': True, 'remaining_proposals': remaining_proposals}
+        if revision is not None:
+            ctx.update(revision_geometry(trial))
+            result['geometry_source'] = {'source': trial['source'], 'rejection_id': rejection['rejection_id'],
+                'observation_revision': trial['observation_revision'], 'phase': trial['phase'],
+                'units': 'mm', 'meaning': 'projection_from_pick_to_nominal_seating'}
         result['context'] = deepcopy(ctx)
         stage = 'bounded_calculation'
-        vm = execute_source(candidate['source_code'], ctx, max_steps=max_steps, timeout_s=timeout_s)
+        version_option = {} if revision is None else {'context_version': 2}
+        vm = execute_source(source, ctx, max_steps=max_steps, timeout_s=timeout_s, **version_option)
         result['vm'] = vm
         stage = 'post_calculation_observation'
         after = current_reader()
@@ -224,13 +237,28 @@ def evaluate_candidate(candidate, observation, *, current_reader, rejection,
             proposal={'kind': 'post_grasp_proposal', 'grasp': grasp,
                 'part_id': context['config']['part']['id'], 'target_id': context['config']['target']['id'],
                 'episode_id': observation['episode_id'], 'observation_revision': observation['revision'],
-                'observation_id': observation['observation_id'], 'candidate_id': candidate['candidate_id'],
-                'code_sha256': candidate['code_sha256'], 'rejection_id': rejection['rejection_id'],
+                'observation_id': observation['observation_id'], 'candidate_id': result['candidate_id'],
+                'code_sha256': result['code_sha256'], 'rejection_id': rejection['rejection_id'],
                 'requires_current_scene_preflight': True, 'execution_authorized': False})
     except Exception as error:
         result['reason'] = stage + '_failed'
         result['error'] = {'type': type(error).__name__, 'stage': stage}
     return result
+
+
+def revision_geometry(trial):
+    """Project only measurements from the bound failed trial into a revision's inputs."""
+    held = trial.get('held_pad_geometry') or {}
+    value = held.get('predicted_lowest_pad_height_relative_to_rim_mm')
+    contact = False
+    for violation in trial.get('violations', []):
+        pair = violation.get('geoms', []) if isinstance(violation, dict) else []
+        if isinstance(pair, list) and len(pair) == 2 and all(type(name) is str for name in pair):
+            contact |= (any(re.fullmatch(r'gripper_(left|right)_pad[12]', name) for name in pair)
+                        and any(name.startswith('assembly_base_wall_') for name in pair))
+    return {'predicted_pad_to_rim_clearance_mm': float(value) if _number(value) else None,
+            'pad_contacts_socket_wall': bool(contact),
+            'pick_completed_in_copy': (trial.get('trace_summary') or {}).get('pick_completed') is True}
 
 
 def capture_observation(skills, *, episode_id, revision):

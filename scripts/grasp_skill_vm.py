@@ -96,7 +96,7 @@ def _launch_child(raw, validator_dir, timeout_s, *, on_started=None):
                 'overflow': overflow.is_set(), 'io_error': write_failed.is_set()}
 
 
-def execute_source(source, context, *, max_steps=1000, timeout_s=3.0):
+def execute_source(source, context, *, max_steps=1000, timeout_s=3.0, context_version=1):
     """Return JSON or an explicit error; domain grasp validation belongs to the host.
 
     A timeout marks execution as potentially attempted, never successful. No
@@ -126,12 +126,17 @@ def execute_source(source, context, *, max_steps=1000, timeout_s=3.0):
         code_sha, input_sha = sha256(source_bytes), sha256(json_bytes(cloned))
         request = {'schema': PROTOCOL, 'source': source, 'context': cloned,
                    'max_steps': max_steps, 'code_sha256': code_sha, 'input_sha256': input_sha}
+        if type(context_version) is not int or context_version not in (1, 2):
+            raise ValueError('Invalid grasp context version.')
+        if context_version == 2:
+            request['context_version'] = context_version
+            result['context_version'] = context_version
         checked_request(request)
         raw = json_bytes(request)
         if len(raw) > MAX_INPUT_BYTES:
             raise ValueError('input_size')
         stage = 'static_validation'
-        grasp_skill_candidates.inspect_source(source)
+        grasp_skill_candidates.inspect_source(source, context_version=context_version)
         validator_path = Path(grasp_skill_candidates.__file__).resolve()
         vm_sha = sha256((HERE / 'vendor/python_skill_vm.py').read_bytes())
         if vm_sha != VENDOR_SHA256:
