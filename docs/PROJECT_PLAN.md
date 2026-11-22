@@ -1,5 +1,9 @@
 # UR 계열 조립 에이전트 시스템 — 4주·10부품 목표
 
+<!-- assembly_v12:start -->
+**2026-11-23 최신 구현 기준:** 이번 새 기본 경로는 [v1.2 MASTER](design_v12/ASSEMBLY_MASTER_DESIGN_v1.2.md), [통합 사용법](INTEGRATED_ASSEMBLY_V12.md), [검증 보고서](STEP_27_V12_VERIFICATION.md)를 따른다. 공통 입력과 자동 작업 조건 생성, single/roles_shared_history 및 S0/S1/R0/R1, 객관 사건+지침, 실패 후 조건/영상 검색, 상태 재생을 분리한다. 과거 계획의 C0~C4·A~E 및 제품별 실행기는 역사적/회귀 경로로 보존한다. 새로운 코드 스킬 생성과 실물 실행은 이번 기본 경로에 포함하지 않는다.
+<!-- assembly_v12:end -->
+
 **26 · 실제 산업 CAD 연결 (2026-11-20).** Framework 배터리 6부품의 실제 분해 성공 체인·해시·mm 출처·정규화 좌표를 새 전달 묶음으로 보존했다. 첫 CELL의 scripted 물리 파지·운반·해제까지 확인했으나 정확한 설치는 실패했고, 충돌 근사 검사를 추가해 현재 추가 실행을 막는다. 첫 부품 설치 검증 전에는 나머지 순서/LLM 실행으로 확대하지 않는다. [상세 기록](STEP_26_FRAMEWORK_BATTERY_TRANSFER.md)
 
 

@@ -123,7 +123,7 @@ class ApiLedger:
     @contextmanager
     def agent_turn(self, role):
         """Attribute serial decisions without creating a second budget or client."""
-        if role not in ('assembly', 'recovery') or self.current_agent is not None:
+        if role not in ('single', 'assembly', 'recovery', 'guidance') or self.current_agent is not None:
             raise ValueError('Expected a single active assembly or recovery agent.')
         def counters():
             return {'api_calls': self.model_requests, 'input_tokens': self.input_tokens,

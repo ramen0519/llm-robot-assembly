@@ -1,0 +1,14 @@
+{
+  "schema": "assembly_workcell/v1.2",
+  "robot": "ur3e", "gripper": "robotiq_2f85",
+  "tabletop_z_m": 0.75, "robot_base_world_m": [0.0, 0.20, 0.75],
+  "assembly_center_xy_m": [-0.12, -0.12],
+  "grid_first_center_xy_m": [0.13, -0.10], "grid_direction_xy": [-1, 1],
+  "grid_margin_m": 0.02, "table_margin_m": 0.10, "table_min_size_xy_m": [1.0, 0.8],
+  "spawn_clearance_m": 0.0005, "max_parts": 10, "max_grid_cells": 100,
+  "max_geometry_cells": 12000, "preparation_attempts": 1,
+  "assumed_mass_kg": 0.04, "assumed_cover_mass_kg": 0.08,
+  "friction": [0.8, 0.005, 0.0001],
+  "fixture": "fixed_base_bolted_to_table",
+  "assumptions": "Simulation defaults, not laboratory measurements; rigid bodies; upright orthogonal square socket/post/sleeve/cover only. No refeeding or added fixture."
+}

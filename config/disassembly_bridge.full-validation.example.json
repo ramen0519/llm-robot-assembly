@@ -1,0 +1,11 @@
+{
+  "python": "/opt/asap-research/envs/asap/bin/python",
+  "repository": "/mnt/c/dev/llm-robot-assembly/runtime/integration_disassembly_source",
+  "asap_root": "/opt/asap-research/ASAP",
+  "max_attempts": 16,
+  "max_path": 96,
+  "max_stability": 64,
+  "max_poses": 3,
+  "seconds": 900,
+  "usage": "Optional extended offline validation. No API; only run with the larger time budget explicitly authorized."
+}

@@ -1,5 +1,9 @@
 # LLM Robot Assembly
 
+<!-- assembly_v12:start -->
+**2026-11-23 · v1.2 통합 경로:** `scripts/run_assembly.py`에서 새 제품 입력·분해 export 검증·지원 형상 자동 준비·공유 이력 정책·복구·경험·영상·평가 연결을 제공한다. 실제 API 없는 신규 기둥 및 기둥/슬리브 연속 조립·검색/정렬 복구는 확인했다. 실제 Astra, DINO 추론, 새 전체 프레임 완주는 별도 미완료 항목이다. [실행 방법과 범위](docs/INTEGRATED_ASSEMBLY_V12.md) · [실제 검증 결과](docs/STEP_27_V12_VERIFICATION.md). 아래 날짜별 기록은 기존 구현의 이력이며 삭제하지 않았다.
+<!-- assembly_v12:end -->
+
 **26 · Framework 배터리 CAD 연결 (2026-11-20).** 실제 Astra/ASAP 성공 체인 `2→3→1→4→5`를 검사·복사하고, 새 CAD 경로로 UR3e/2F-85 장면과 첫 CELL의 물리 파지·운반·해제를 구현했다. 정확한 설치는 아직 실패이며 충돌 근사 오차가 있어 현재 실행 전 중단한다. 기존 프레임 기능/결과는 보존했다. [검증 결과·실행 명령·제약](docs/STEP_26_FRAMEWORK_BATTERY_TRANSFER.md)
 
 

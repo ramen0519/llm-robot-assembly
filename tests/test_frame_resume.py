@@ -14,6 +14,12 @@ from test_openai_policy import response_for, settings
 
 
 class FrameResumeTests(unittest.TestCase):
+    def test_v12_default_does_not_renew_grasp_budget(self):
+        with patch('llm_runtime.create_openai_client') as create:
+            with self.assertRaisesRegex(ValueError,'cumulative three-grasp'):
+                execute_trial(resume_run=Path('not-read'),mode='single',llm_config=Path('not-read'))
+            create.assert_not_called()
+
     def run_fixture(self, root, config, *, resume=None, stop=False, stop_after=0):
         requests=[]
         def handler(request):
@@ -33,7 +39,7 @@ class FrameResumeTests(unittest.TestCase):
         with patch('llm_runtime.create_openai_client',return_value=client) as create, \
                 patch('llm_runtime.load_llm_config',return_value=config):
             result=execute_trial(product_count=2,mode='single',llm_config=Path('offline.toml'),
-                                 output_root=root,resume_run=resume)
+                                 output_root=root,resume_run=resume,legacy_extended_resume=resume is not None)
         client.close()
         return result,requests,create.call_count
 

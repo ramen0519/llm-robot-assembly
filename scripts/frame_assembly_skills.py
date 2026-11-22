@@ -31,7 +31,7 @@ class FrameVerifier(InsertionVerifier):
         return self.geom_part.get(counterpart) in supports
 
     def mating_relation(self, part, counterpart):
-        target = 'base' if counterpart in self.fixture_geoms else self.geom_part.get(counterpart)
+        target = self.registry[part].get('fixed_base_id', 'base') if counterpart in self.fixture_geoms else self.geom_part.get(counterpart)
         return target in self.registry[part]['mating_ids']
 
     def contacts(self, data, *, allow_support, allow_grasp, planned=False):
@@ -208,7 +208,7 @@ class FrameSkills(InsertionSkills):
                           seating_surface=f'plate underside rests on all {len(supports)} sleeve tops; posts pass through respective holes',
                           tcp_note='TCP is the midpoint between the two pads. The pads must close on opposed solid faces.')
             return packet
-        post = next(name for name in self.registry[self.active]['requires'] if name != 'base')
+        post = next(name for name in self.registry[self.active]['requires'] if name != self.registry[self.active].get('fixed_base_id', 'base'))
         packet.update(shape='upright square sleeve with a centered through-hole',
                       frame='origin at geometric center of sleeve; axes follow the sleeve; +z is up',
                       bore_width_mm=1000*dims['hole_width'], mating_post_id=post,
@@ -280,7 +280,7 @@ class FrameSkills(InsertionSkills):
         if part_id != self.active or self.motion.held_pose is not None or part_id in self.installed:
             raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, 'Need a known uninstalled free component and empty gripper.')
         entry = self.registry[part_id]
-        if not set(entry['requires']) <= self.installed | {'base'}:
+        if not set(entry['requires']) <= self.installed | {entry.get('fixed_base_id', 'base')}:
             raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, 'Component prerequisites are not assembled.')
         body = self.data.body(self.verifier.part_body)
         rotation = body.xmat.reshape(3, 3).copy()
@@ -317,7 +317,7 @@ class FrameSkills(InsertionSkills):
     def verify_sleeve_fit(self):
         """Check the four actual post edges at both openings in the sleeve's own frame."""
         entry = self.registry[self.active]
-        post_id = next(name for name in entry['requires'] if name != 'base')
+        post_id = next(name for name in entry['requires'] if name != self.registry[self.active].get('fixed_base_id', 'base'))
         height = self.config['part']['size_m'][2]
         return {'sleeve_height_mm': 1000*height, **self._measure_post_in_bore(post_id, np.zeros(3), height)}
 

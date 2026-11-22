@@ -214,8 +214,11 @@ class OpenAIAssemblyPolicy:
         ledger.begin_generation(counted.input_tokens, request_hash)
         try:
             response = self.client.responses.create(**request, max_output_tokens=self.config.max_output_tokens,
-                                                    store=False, service_tier='default')
+                                                    store=False, service_tier='default',
+                                                    **({'include': ['reasoning.encrypted_content']} if getattr(self, 'replay_encrypted_reasoning', False) else {}))
             body = response.model_dump(mode='json')
+            if getattr(self, 'replay_encrypted_reasoning', False):
+                ledger.record('model_response_raw', response=body)
         except (Exception, KeyboardInterrupt) as exc:
             ledger.halted = True
             ledger.record('model_request_failed', error_type=type(exc).__name__, http_status=getattr(exc, 'status_code', None), usage_unknown=True)

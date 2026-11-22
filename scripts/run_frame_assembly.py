@@ -96,7 +96,9 @@ def execute_trial(*, product_count=None, snapshots=False, output_root=None, mode
                   transport_replan_budget=0, empty_approach_strategy=None, policies=None, planner_candidate=None,
                   post_sleeve_llm_config=None, llm_config=None, resume_run=None,
                   target_parts=None, grasp_skill_library=None, sleeve_memory=None, sleeve_memory_targets=None,
-                  layout='four_post'):
+                  layout='four_post', legacy_extended_resume=False):
+    if resume_run is not None and not legacy_extended_resume:
+        raise ValueError('v1.2 preserves the cumulative three-grasp budget. Extra resume proposals require an explicitly labeled legacy_extended_resume experiment.')
     if layout not in ('four_post', 'triangle_three_post'):
         raise ValueError('Unknown product layout.')
     triangular = layout == 'triangle_three_post'
@@ -481,6 +483,9 @@ def execute_trial(*, product_count=None, snapshots=False, output_root=None, mode
               'segment_wall_elapsed_s': segment_elapsed,
               'diagnostic_interval_s': recorder.diagnostic_interval_s,
               'wall_elapsed_s': segment_elapsed + (parent['wall_elapsed_s'] if parent else 0.)}
+    if legacy_extended_resume:
+        result['budget_layer'] = 'legacy_extended_resume_additional_three_grasps'
+        result['eligible_for_v12_comparison'] = False
     write_json(recorder.run_dir / 'result.json', result)
     print(f'{status}: {recorder.run_dir}', flush=True)
     if error:
@@ -508,12 +513,14 @@ if __name__ == '__main__':
     parser.add_argument('--sleeve-memory', type=Path, help='Verified sleeve experience to search before the first grasp')
     parser.add_argument('--sleeve-memory-targets', nargs='+', help='Search targets; defaults to sleeves 2 and 4 on the four-post frame, 2 and 3 on the triangle')
     parser.add_argument('--planner-candidate', type=Path, help='Native candidate whose CAD, frames and evidence are rechecked before motion')
+    parser.add_argument('--legacy-extended-resume', action='store_true', help='Explicit historical experiment with three additional grasp candidates; excluded from v1.2 comparisons')
     args = parser.parse_args()
     result = execute_trial(product_count=args.parts, layout=args.layout, snapshots=args.snapshots, mode=args.mode, scenario=args.scenario,
         show_viewer=args.viewer, transport_strategy=args.transport_strategy, transfer_obstacle=args.transfer_obstacle,
         empty_approach_strategy=args.empty_approach_strategy, transport_replan_budget=args.transport_replan_budget,
         planner_candidate=args.planner_candidate, post_sleeve_llm_config=args.post_sleeve_llm_config,
         llm_config=args.llm_config, resume_run=args.resume_run, target_parts=args.target_parts,
+        legacy_extended_resume=args.legacy_extended_resume,
         grasp_skill_library=args.grasp_skill_library, sleeve_memory=args.sleeve_memory,
         sleeve_memory_targets=args.sleeve_memory_targets)
     raise SystemExit(0 if result['status'] == 'success' else 1)

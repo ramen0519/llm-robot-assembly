@@ -1,0 +1,24 @@
+{
+  "schema": "assembly_trial_inputs/v1.2",
+  "memory_root": "runtime/memory/assembly_v12_verified",
+  "shared_run_config": {
+    "policy": "scripted",
+    "seconds": 300
+  },
+  "cases": [
+    {
+      "lineage_id": "replace-with-independent-collection-condition",
+      "family": "square_vertical_cell",
+      "split": "collection",
+      "prepared": "runs/REPLACE_WITH_COLLECTION_PREPARATION/prepared.json",
+      "scenario": "nominal"
+    },
+    {
+      "lineage_id": "replace-with-held-out-evaluation-condition",
+      "family": "square_vertical_cell",
+      "split": "evaluation",
+      "prepared": "runs/REPLACE_WITH_EVALUATION_PREPARATION/prepared.json",
+      "scenario": "nominal"
+    }
+  ]
+}
