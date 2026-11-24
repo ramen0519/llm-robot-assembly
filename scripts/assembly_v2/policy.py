@@ -8,6 +8,7 @@ from assembly_v12.contracts import digest,read
 from failure_report import FailureCode,FailureEvent
 from .grasp import GRASP_SCHEMA
 from .memory import guidance_schema,validate_guidance
+from .packets import observation_packet,guidance_packet
 
 def action_schema(context):
     props={'skill':{'type':'string','enum':context['allowed_skills']},'part_id':{'type':'string','enum':[context['part_id']]},
@@ -36,7 +37,10 @@ class Astra:
                 counted=client.responses.input_tokens.count(**request)
                 ledger.record('input_count_completed',input_tokens=counted.input_tokens)
             except Exception as exc:
-                ledger.halted=True;ledger.record('input_count_failed',error_type=type(exc).__name__)
+                body=getattr(exc,'body',None)
+                ledger.halted=True;ledger.record('input_count_failed',error_type=type(exc).__name__,
+                    http_status=getattr(exc,'status_code',None),provider_code=body.get('code') if isinstance(body,dict) else None,
+                    parameter=body.get('param') if isinstance(body,dict) else None)
                 raise FailureEvent(FailureCode.POLICY_REQUEST_FAILED,'Input count failed; no generation retried.') from None
             # Recompute the deadline after counting, rather than granting a second stale timeout.
             self.budget.check('api_generation');timeout=self.budget.remaining(self.config.timeout_seconds)
@@ -44,7 +48,9 @@ class Astra:
             try:
                 response=self.client.with_options(timeout=timeout).responses.create(**request,
                     max_output_tokens=self.config.max_output_tokens,store=False,service_tier='default',include=['reasoning.encrypted_content'])
-                body=response.model_dump(mode='json')
+                # The next Responses request needs wire names (e.g. async),
+                # not Python aliases (async_). Preserve reasoning/tool pairing.
+                body=response.model_dump(mode='json',by_alias=True,exclude_none=True)
             except Exception as exc:
                 ledger.halted=True;ledger.record('model_request_failed',error_type=type(exc).__name__,usage_unknown=True)
                 raise FailureEvent(FailureCode.POLICY_REQUEST_FAILED,'Generation failed; unknown use remains reserved, no automatic retry.') from None
@@ -61,13 +67,13 @@ class Astra:
           'reasoning':{'effort':self.config.reasoning_effort}}
     def propose(self,context):
         if self.history.pending:raise ValueError('Previous tool call not completed.')
-        self.history.add({'role':'user','content':json.dumps(context,ensure_ascii=False,allow_nan=False)})
+        self.history.add({'role':'user','content':json.dumps(observation_packet(context),ensure_ascii=False,allow_nan=False,separators=(',',':'))})
         role=context['active_role']
         req=self.request('propose_assembly_action',action_schema(context),self.prompts['common']+'\n'+self.prompts[role],deepcopy(self.history.items))
         response=self.call(req,role);self.history.accept(response)
         return validate_action(_tool_arguments(response,'propose_assembly_action'),context)
     def guidance(self,incident):
-        req=self.request('propose_guidance',guidance_schema(),self.prompts['guidance'],json.dumps(incident,ensure_ascii=False,allow_nan=False))
+        req=self.request('propose_guidance',guidance_schema(),self.prompts['guidance'],json.dumps(guidance_packet(incident),ensure_ascii=False,allow_nan=False,separators=(',',':')))
         response=self.call(req,'guidance');card=_tool_arguments(response,'propose_guidance');validate_guidance(card,incident);return card
 
 class Scripted:

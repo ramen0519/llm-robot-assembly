@@ -12,13 +12,14 @@ from assembly_v12.contracts import InputError,location,read,write,import_export,
 from .budget import Budget
 from .preparation import prepare,geometric_priority,PROFILE
 from .artifacts import report,audit,counters
+from .storage import run_root,memory_root
 
 ROOT=Path(__file__).resolve().parents[2]
 
 def linux_path(path):
     p=location(path)
-    if not p.drive or p.drive.upper()!='C:':raise ValueError('This configured WSL bridge accepts C: source/output paths only.')
-    return '/mnt/c/'+p.as_posix()[3:]
+    if not p.drive or p.drive.upper() not in ('C:','F:'):raise ValueError('This configured WSL bridge accepts authorized C: and F: paths only.')
+    return '/mnt/'+p.drive[0].lower()+'/'+p.as_posix()[3:]
 
 def bridge(source,folder,config_path,budget,*,unit=None,assembled=False,base=None,profile=None):
     config=read(config_path);windows=os.name=='nt' and config['python'].startswith('/')
@@ -52,7 +53,7 @@ def bridge(source,folder,config_path,budget,*,unit=None,assembled=False,base=Non
     return export
 
 def pipeline(args):
-    out=location(args.output) if args.output else ROOT/'runs/assembly_v2'/(datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')+'_'+uuid.uuid4().hex[:6])
+    out=location(args.output) if args.output else run_root()/'assembly_v2'/(datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')+'_'+uuid.uuid4().hex[:6])
     out.mkdir(parents=True,exist_ok=False)
     budget=Budget(args.seconds,cancelled=lambda:(out/'cancel.request').exists());prepared=None;started=time.monotonic()
     try:
@@ -109,7 +110,7 @@ def main(argv=None):
         p.add_argument('--seconds',type=float,default=300)
         if name=='run':
             p.add_argument('--policy',choices=['astra','scripted'],default='astra');p.add_argument('--condition',choices=['S0','S1','R0','R1'],default='R0')
-            p.add_argument('--llm-config',default=str(ROOT/'config/llm.astra-high.toml'));p.add_argument('--memory-root',default=str(ROOT/'runtime/memory/assembly_v2'))
+            p.add_argument('--llm-config',default=str(ROOT/'config/llm.astra-high.toml'));p.add_argument('--memory-root',default=str(memory_root()))
             p.add_argument('--encoder',default=str(ROOT/'runtime/assets/dinov2-small'));p.add_argument('--snapshot');p.add_argument('--plan')
             p.add_argument('--split',choices=['development','collection','evaluation'],default='development');p.add_argument('--lineage')
             p.add_argument('--first-grasp');p.add_argument('--approach',choices=['top','side','oblique'])
@@ -117,7 +118,7 @@ def main(argv=None):
     p=sub.add_parser('status')
     for name in ('audit','report','replay'):
         p=sub.add_parser(name);p.add_argument('--run',required=True)
-    p=sub.add_parser('freeze');p.add_argument('--root',default=str(ROOT/'runtime/memory/assembly_v2'));p.add_argument('--output',required=True)
+    p=sub.add_parser('freeze');p.add_argument('--root',default=str(memory_root()));p.add_argument('--output',required=True)
     p=sub.add_parser('plan-trials');p.add_argument('--manifest',required=True);p.add_argument('--snapshot');p.add_argument('--output',required=True)
     for name in ('collect','evaluate'):
         p=sub.add_parser(name);p.add_argument('--manifest',required=True);p.add_argument('--output',required=True)

@@ -15,7 +15,8 @@ from .budget import Budget
 from .media import CAMERA_VERSION
 
 ROOT=Path(__file__).resolve().parents[2]
-DEFAULT_MEMORY=ROOT/'runtime/memory/assembly_v2'
+from .storage import memory_root
+DEFAULT_MEMORY=memory_root()
 DOMAIN='general_mesh_assembly/v2.0'
 
 def source_identity(prepared):

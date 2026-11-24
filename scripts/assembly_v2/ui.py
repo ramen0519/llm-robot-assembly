@@ -11,9 +11,10 @@ import uuid
 from flask import Flask,request,jsonify,send_from_directory,session,abort
 from assembly_v12.contracts import location,read,write
 from llm_runtime import load_llm_config
+from .storage import run_root,memory_root,upload_root
 
 ROOT=Path(__file__).resolve().parents[2]
-RUNS=ROOT/'runs/assembly_v2_ui'
+RUNS=run_root()/'assembly_v2_ui'
 
 def environment_status():
     cfg=load_llm_config(ROOT/'config/llm.astra-high.toml')
@@ -25,7 +26,7 @@ def environment_status():
       'API_key_present':bool(os.environ.get(cfg.api_key_env)),'per_run_config_cap_usd':cfg.max_cost_usd,
       'per_run_generation_cap':cfg.max_model_requests,'native_bridge':'requires responsive configured ASAP-Ubuntu; not assumed healthy',
       'encoder_weights_present':(ROOT/'runtime/assets/dinov2-small/model.safetensors').is_file(),'packages':packages,
-      'hardware_execution':'disabled; simulator only'}
+      'hardware_execution':'disabled; simulator only','output_root':str(run_root()),'memory_root':str(memory_root())}
 
 PAGE='''<!doctype html><html lang="ko"><meta charset="utf-8"><title>조립 프로토타입 v2</title>
 <style>body{font:17px system-ui;max-width:1080px;margin:30px auto;padding:16px;color:#222}input,select,button{padding:10px;margin:5px}input[type=text]{width:80%}pre{background:#f5f5f5;padding:14px;white-space:pre-wrap}img{max-width:46%}video{max-width:100%}</style>
@@ -77,7 +78,7 @@ def create_app(run_root=RUNS):
                 if upload and upload.filename:
                     suffix=Path(upload.filename).suffix.lower()
                     if suffix not in ('.step','.stp','.zip','.json','.obj'):raise ValueError('지원 파일 형식이 아닙니다.')
-                    directory=ROOT/'runtime/ui_inputs'/uuid.uuid4().hex;directory.mkdir(parents=True)
+                    directory=upload_root()/uuid.uuid4().hex;directory.mkdir(parents=True)
                     target=directory/('product'+suffix);upload.save(target);source=str(target)
                 if not source or not location(source).exists():raise ValueError('존재하는 입력 경로를 선택하세요.')
                 job=uuid.uuid4().hex;out=folder(job)

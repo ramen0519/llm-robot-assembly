@@ -112,7 +112,7 @@ class ResponsesTransport:
             response = self.client.responses.create(**request, max_output_tokens=self.config.max_output_tokens,
                                                     store=False, service_tier='default',
                                                     **({'include': ['reasoning.encrypted_content']} if getattr(self, 'replay_encrypted_reasoning', False) else {}))
-            body = response.model_dump(mode='json')
+            body = response.model_dump(mode='json', by_alias=True, exclude_none=True)
             if getattr(self, 'replay_encrypted_reasoning', False):
                 ledger.record('model_response_raw', response=body)
         except (Exception, KeyboardInterrupt) as exc:
