@@ -72,9 +72,11 @@ def audit(folder):
     if success and (not p or not valid_evidence(final,p['completion_profile_hash'],required_parts=p['order'])):
         issues.append('missing_or_invalid_common_final_window')
     if result.get('metrics')!=counters(rows):issues.append('event_result_counter_mismatch')
-    if result.get('policy_source')=='astra' and result.get('policy_decision_evaluated') and not (folder/'llm_events.jsonl').is_file():issues.append('missing_actual_model_journal')
+    if result.get('main_action_policy_source',result.get('policy_source'))=='astra' and result.get('policy_decision_evaluated') and not (folder/'llm_events.jsonl').is_file():issues.append('missing_actual_model_journal')
     model_hash=sha(folder/'model.mjb') if (folder/'model.mjb').exists() else None
     for e in rows:
+        if e.get('policy_source')=='development_failure_probe' and (e.get('executed') or result.get('split')!='development' or not result.get('development_failure_probe')):
+            issues.append('invalid_development_probe_provenance:'+e['id'])
         if e.get('tool_result',{}).get('executed')!=e.get('executed'):issues.append('event_tool_executed_mismatch:'+e['id'])
         if e.get('tool_result',{}).get('source')!=e.get('source'):issues.append('event_tool_source_mismatch:'+e['id'])
         if e.get('installation_verified') and (not e['executed'] or e['source']!='live_simulation' or
@@ -147,6 +149,8 @@ def report(folder,result):
     doc=['<!doctype html><html lang="ko"><meta charset="utf-8"><title>조립 v2 결과</title><style>body{font:16px system-ui;max-width:1100px;margin:30px auto;padding:20px}td{border:1px solid #ccc;padding:10px}table{border-collapse:collapse}img{width:320px}video{max-width:800px;width:100%}pre{white-space:pre-wrap}</style>',
       '<h1>조립 실행 결과</h1><p>물리 결과 · 기록 검사 · 영상 생성은 별도 판정입니다. scripted는 Astra 실행이 아니며, 복사 검사는 실제 설치가 아닙니다.</p>',
       '<table>'+''.join('<tr><td>'+h(k)+'</td><td>'+h(v)+'</td></tr>' for k,v in values.items())+'</table>']
+    if result.get('development_failure_probe'):
+        doc.append('<p><strong>개발용 복구 시험:</strong> 첫 실패 후보는 명시적으로 투입한 검사입니다. 그 후보로 주 장면을 움직이지 않습니다. 이후 복구·실행 판단은 실제 Astra이며, 자연 실패율/연구 수집에 포함하지 않습니다.</p>')
     for name in ('goal_top','goal_oblique','initial','final'):
         if (folder/'media'/(name+'.png')).exists():doc.append('<figure><img src="media/'+name+'.png"><figcaption>'+h(name)+'</figcaption></figure>')
     if (folder/'media/execution.mp4').exists():doc.append('<h2>실행 중 저장한 상태의 영상</h2><video controls src="media/execution.mp4"></video>')

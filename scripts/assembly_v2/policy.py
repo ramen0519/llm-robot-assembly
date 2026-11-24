@@ -73,7 +73,7 @@ class Astra:
         response=self.call(req,role);self.history.accept(response)
         return validate_action(_tool_arguments(response,'propose_assembly_action'),context)
     def guidance(self,incident):
-        req=self.request('propose_guidance',guidance_schema(),self.prompts['guidance'],json.dumps(guidance_packet(incident),ensure_ascii=False,allow_nan=False,separators=(',',':')))
+        req=self.request('propose_guidance',guidance_schema(incident),self.prompts['guidance'],json.dumps(guidance_packet(incident),ensure_ascii=False,allow_nan=False,separators=(',',':')))
         response=self.call(req,'guidance');card=_tool_arguments(response,'propose_guidance');validate_guidance(card,incident);return card
 
 class Scripted:

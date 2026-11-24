@@ -40,17 +40,21 @@ class Turn(TypedDict):
     done: bool
 
 def run(prepared,folder,*,condition='R0',policy_kind='scripted',llm_config=None,memory_root=None,snapshot=None,
-        encoder_path=None,seconds=300,budget=None,split='development',lineage_id=None,plan=None,first_grasp=None,approach=None):
+        encoder_path=None,seconds=300,budget=None,split='development',lineage_id=None,plan=None,first_grasp=None,approach=None,failure_probe=None):
     folder=Path(folder);folder.mkdir(parents=True,exist_ok=True);run_id=folder.name+'-'+uuid.uuid4().hex[:8]
     if any((folder/n).exists() for n in ('result.json','events.jsonl','model.mjb')):raise ValueError('Use a fresh run directory; no budget reset.')
     mode,memory=CONDITIONS[condition];lineage_id=lineage_id or run_id
     split_contract(split,memory,policy_kind,snapshot,plan,prepared,lineage_id)
     if (first_grasp is not None or approach is not None) and (policy_kind!='scripted' or split!='development'):
         raise ValueError('A development grasp/approach option cannot be silently applied to Astra/research.')
+    if failure_probe is not None and (split!='development' or policy_kind!='astra' or first_grasp is not None or approach is not None):
+        raise ValueError('An explicit copy-only development failure probe requires Astra development; never research collection/evaluation.')
     budget=budget or Budget(seconds);control=ControlBudget(len(prepared['order']));started=time.monotonic()
     from .validation import check_prepared
     check_prepared(prepared,budget)
-    result={'schema':'assembly_result/v2.0','run_id':run_id,'status':'initializing','policy_source':policy_kind,
+    result={'schema':'assembly_result/v2.0','run_id':run_id,'status':'initializing',
+        'policy_source':'astra_with_explicit_development_probe' if failure_probe is not None else policy_kind,
+        'development_failure_probe':failure_probe is not None,'main_action_policy_source':policy_kind,
         'condition':condition,'mode':mode,'memory':memory,'split':split,'lineage_id':lineage_id,
         'source_identity':source_identity(prepared),'required':prepared['order'],'installed':[],'api_calls':0,
         'policy_decision_evaluated':False,'reference_status':'not_run','preparation_status':'geometry_ready',
@@ -60,9 +64,10 @@ def run(prepared,folder,*,condition='R0',policy_kind='scripted',llm_config=None,
     prompts=read(ROOT/'config/policy_prompts.v2.json')
     write(folder/'resolved_config.json',{'prepared_sha256':digest(prepared),'condition':condition,'policy_source':policy_kind,
          'split':split,'lineage_id':lineage_id,'prompts_hash':digest(prompts),'budget':result['budget'],
-         'first_grasp':first_grasp,'approach':approach,'completion_profile_hash':prepared['completion_profile_hash']})
+         'first_grasp':first_grasp,'approach':approach,'development_failure_probe':failure_probe,
+         'completion_profile_hash':prepared['completion_profile_hash']})
     record=ledger=history=policy=skills=library=None;installed=set();settled={};prealignment={};all_events=[]
-    alignments=replans=revision=0;final=None;incidents=[];guidance=[];model=None;data=None
+    alignments=replans=revision=0;final=None;incidents=[];guidance=[];model=None;data=None;probe_used=False
     def persist():
         result.update(installed=sorted(installed),metrics=counters(all_events),elapsed_s=time.monotonic()-started,control_generations=control.used)
         if ledger:
@@ -105,7 +110,7 @@ def run(prepared,folder,*,condition='R0',policy_kind='scripted',llm_config=None,
             skills.prealignment=prealignment
             attempts=0;pending=None;last_grasp=None;seen=set();part_done=False;main_changed_failure=False
             def turn(_state):
-                nonlocal attempts,pending,revision,part_done,alignments,replans,last_grasp,main_changed_failure
+                nonlocal attempts,pending,revision,part_done,alignments,replans,last_grasp,main_changed_failure,probe_used
                 budget.check('graph_turn');control.begin();revision+=1
                 current=body_pose(data,body_name(active,prepared['base_id']))
                 measured=skills.motion.sample(allow_support=True,allow_grasp=skills.motion.held_pose is not None)
@@ -137,11 +142,18 @@ def run(prepared,folder,*,condition='R0',policy_kind='scripted',llm_config=None,
                     'measured':json_safe(measured),'holding_part':active if skills.motion.held_pose is not None else None,
                     'verified_installed_parts':sorted(installed),'failure':pending,'experiences':cards,
                     'operation':prepared['parts'][active]['operation'],'remaining':{'candidates':3-attempts,'alignment':1-alignments,'replan':1-replans,'control':control.limit-control.used}}
-                before=skills.snapshot();proposal=policy.propose(context);result['policy_decision_evaluated']=policy_kind=='astra'
+                before=skills.snapshot();is_probe=failure_probe is not None and not probe_used
+                if is_probe:
+                    probe_used=True
+                    proposal={'skill':'pick','part_id':active,'target_id':context['target_id'],'observation_revision':revision,
+                        'reason':'Explicit development-only copy failure probe, not an Astra decision. Main execution is forbidden for this probe.',
+                        'grasp':deepcopy(failure_probe)}
+                else:
+                    proposal=policy.propose(context);result['policy_decision_evaluated']=policy_kind=='astra'
                 action_id=run_id+':action:'+str(revision);record.action_id=action_id;record.check_id=None
                 append(folder/'observations.jsonl',{'action_id':action_id,'state_hash':before,'context':context})
                 event={'id':run_id+':event:'+str(revision),'action_id':action_id,'observation_revision':revision,'part_id':active,
-                    'active_role':role,'proposal':proposal,'policy_source':policy_kind,'source':'live_simulation',
+                    'active_role':role,'proposal':proposal,'policy_source':'development_failure_probe' if is_probe else policy_kind,'source':'live_simulation',
                     'geometry_candidates_generated':pool['raw_generated'],'candidate_started':False,'executed':False,
                     'installation_verified':False,'failure':None,'retrieved':[c['record_id'] for c in cards],
                     'memory_snapshot':library.snapshot['id']}
@@ -152,6 +164,7 @@ def run(prepared,folder,*,condition='R0',policy_kind='scripted',llm_config=None,
                     if action=='stop':result['error']=proposal['reason'];done=True
                     elif action=='pick':
                         grasp=resolve(proposal['grasp'],pool,prepared['parts'][active],current,revision,policy_kind)
+                        if is_probe:grasp['source']='explicit_development_failure_probe'
                         if policy_kind=='scripted' and policy.last_provenance=='development_injection':grasp['source']='development_injection'
                         if policy_kind=='scripted' and policy.last_provenance=='development_guidance_revalidation':
                             grasp.update(source='development_guidance_revalidation',guidance_id=policy.last_guidance)
@@ -163,6 +176,7 @@ def run(prepared,folder,*,condition='R0',policy_kind='scripted',llm_config=None,
                         if not preflight['accepted']:
                             event['failure']=preflight['failure'];pending=event['failure'];response={'status':'preflight_rejected','preflight':preflight}
                         else:
+                            if is_probe:raise ValueError('development_probe_did_not_reproduce_a_failure; injected grasp cannot move the main scene')
                             record.check_id=None;record.last_failure=None
                             response=skills.pick(grasp);pending=None;main_changed_failure=False
                     elif action in ('insert','replan_insert'):
@@ -189,6 +203,10 @@ def run(prepared,folder,*,condition='R0',policy_kind='scripted',llm_config=None,
                     event['source']=response['source']
                     event['tool_result']=json_safe(response);event['simulation_end_s']=float(data.time)
                     all_events.append(json_safe(event));append(folder/'events.jsonl',all_events[-1])
+                    if is_probe and history:
+                        history.add({'role':'user','content':__import__('json').dumps({'explicit_development_probe':True,
+                            'not_an_Astra_decision':True,'proposal':proposal,'result':all_events[-1]['tool_result']},
+                            ensure_ascii=False,separators=(',',':'))})
                     if history and history.pending:history.complete(all_events[-1]['tool_result'])
                     persist()
                 return {'done':done}
@@ -204,7 +222,7 @@ def run(prepared,folder,*,condition='R0',policy_kind='scripted',llm_config=None,
             write(folder/'final_verification.json',final)
         success=not result.get('hard_execution_violation') and installed==set(prepared['order']) and valid_evidence(final,prepared['completion_profile_hash'],required_parts=prepared['order'])
         result['status']='physical_success' if success else 'deadline' if result.get('deadline_reached') else 'partial' if installed else 'failed'
-        incidents=incidents_from(all_events,run_id,prepared,split,lineage_id,policy_kind,final)
+        incidents=incidents_from(all_events,run_id,prepared,split,lineage_id,result['policy_source'],final)
         if result.get('hard_execution_violation'):
             for incident in incidents:incident.update(registration='pending',registration_reason='hard_execution_violation_in_episode')
         write(folder/'incidents.json',incidents)

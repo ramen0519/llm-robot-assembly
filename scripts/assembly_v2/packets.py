@@ -43,4 +43,8 @@ def guidance_packet(incident):
         if e.get('verification'):row['verification']=deepcopy(e['verification'])
         output['events'].append(row)
     output['evidence_view']='Original event IDs and exact applied values; complete events retained in incidents.json and replay bundle.'
+    output['evidence_refs_contract']={'kind':'event IDs only, not action/check/detector IDs',
+         'allowed_event_ids':[e['id'] for e in incident['events']],
+         'required_failure_event_ids':[e['id'] for e in incident['events'] if e.get('failure')],
+         'required_main_installation_event_id':incident['installation_evidence']}
     return output

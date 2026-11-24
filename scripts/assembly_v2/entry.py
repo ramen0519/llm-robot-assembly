@@ -86,7 +86,8 @@ def pipeline(args):
                 plan=matches[0]
             result=run(prepared,out,condition=args.condition,policy_kind=args.policy,llm_config=args.llm_config,
                memory_root=args.memory_root,snapshot=snapshot,encoder_path=args.encoder,seconds=args.seconds,budget=budget,
-               split=args.split,lineage_id=args.lineage,plan=plan,first_grasp=read(args.first_grasp) if args.first_grasp else None,approach=args.approach)
+               split=args.split,lineage_id=args.lineage,plan=plan,first_grasp=read(args.first_grasp) if args.first_grasp else None,approach=args.approach,
+               failure_probe=read(args.development_failure_probe) if args.development_failure_probe else None)
     except Exception as exc:
         import traceback
         result={'schema':'assembly_result/v2.0','status':getattr(exc,'status','not_run' if isinstance(exc,subprocess.TimeoutExpired) else 'preparation_failed'),
@@ -114,6 +115,7 @@ def main(argv=None):
             p.add_argument('--encoder',default=str(ROOT/'runtime/assets/dinov2-small'));p.add_argument('--snapshot');p.add_argument('--plan')
             p.add_argument('--split',choices=['development','collection','evaluation'],default='development');p.add_argument('--lineage')
             p.add_argument('--first-grasp');p.add_argument('--approach',choices=['top','side','oblique'])
+            p.add_argument('--development-failure-probe',help='Explicit copy-only failure probe before Astra recovery; development only, never natural-failure research data.')
     p=sub.add_parser('ui');p.add_argument('--port',type=int,default=8765)
     p=sub.add_parser('status')
     for name in ('audit','report','replay'):

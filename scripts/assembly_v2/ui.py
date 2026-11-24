@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 import uuid
+import hashlib
 from flask import Flask,request,jsonify,send_from_directory,session,abort
 from assembly_v12.contracts import location,read,write
 from llm_runtime import load_llm_config
@@ -43,15 +44,32 @@ PAGE='''<!doctype html><html lang="ko"><meta charset="utf-8"><title>조립 프�
 <p>R: 조립·복구 역할 분리 / S: 단일 역할 / 0: 검색 끔 / 1: 검색 켬. 이 화면은 개발 실행이며 연구 수집·평가는 동결 manifest CLI를 사용합니다.</p>
 <button>시작</button></form><button id="cancel" disabled>중단 요청</button>
 <h2>현재 진행</h2><pre id="progress">입력을 기다립니다.</pre><div id="links"></div><div id="images"></div><video id="video" controls hidden></video>
+<h2>최근 실행 결과</h2><p>CLI와 UI에서 실행한 실제 기록입니다. 개발 시험과 연구 수집은 별도로 표시됩니다.</p><button id="refresh">목록 새로고침</button><div id="recent"></div>
 <script>let job=null,csrf=null;const by=id=>document.getElementById(id);fetch('/api/environment').then(r=>r.json()).then(v=>{csrf=v.csrf;by('env').textContent=JSON.stringify(v.environment,null,2)});
+async function recent(){let r=await fetch('/api/recent');let v=await r.json();by('recent').replaceChildren();for(let x of v.runs){let p=document.createElement('p'),a=document.createElement('a');a.href='/results/'+x.token+'/report.html';a.target='_blank';a.textContent=x.run_id+' · '+x.status+' · '+x.policy_source+' · '+x.split;p.appendChild(a);by('recent').appendChild(p)}}by('refresh').onclick=recent;recent();
 by('form').onsubmit=async e=>{e.preventDefault();let f=new FormData(e.target);f.append('csrf',csrf);let r=await fetch('/api/start',{method:'POST',body:f});let v=await r.json();if(!r.ok){by('progress').textContent=v.error;return}job=v.job;by('cancel').disabled=false;poll()};
 by('cancel').onclick=()=>fetch('/api/cancel/'+job,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({csrf})});
 async function poll(){let r=await fetch('/api/jobs/'+job);let v=await r.json();by('progress').textContent=JSON.stringify(v,null,2);by('images').replaceChildren();for(let n of v.images||[]){let i=document.createElement('img');i.src='/files/'+job+'/'+n;i.alt=n;by('images').appendChild(i)}by('links').replaceChildren();if(v.report){let a=document.createElement('a');a.href='/files/'+job+'/report.html';a.textContent='상세 결과·측정값·검색·로그 열기';a.target='_blank';by('links').appendChild(a)}if(v.video){by('video').hidden=false;by('video').src='/files/'+job+'/'+v.video}if(v.running)setTimeout(poll,2500);else by('cancel').disabled=true;}
 </script></html>'''
 
-def create_app(run_root=RUNS):
+def create_app(run_root=RUNS,*,result_roots=None):
     app=Flask(__name__);app.secret_key=secrets.token_bytes(32);app.config.update(MAX_CONTENT_LENGTH=100*1024*1024,SESSION_COOKIE_SAMESITE='Strict',SESSION_COOKIE_HTTPONLY=True)
     run_root=location(run_root);run_root.mkdir(parents=True,exist_ok=True);jobs={};lock=threading.Lock()
+    roots=[location(p) for p in (result_roots or [run_root])]
+    def catalog():
+        found={}
+        for root in roots:
+            if not root.is_dir():continue
+            for pattern in ('*/result.json','*/*/result.json','*/*/*/result.json'):
+                for path in root.glob(pattern):
+                    if any(x in ('replay_bundle','evidence','implementation') for x in path.relative_to(root).parts):continue
+                    try:
+                        path=location(path);value=read(path)
+                        if value.get('schema')!='assembly_result/v2.0' or not (path.parent/'report.html').is_file():continue
+                        token=hashlib.sha256(str(path.parent).encode()).hexdigest()[:32]
+                        found[token]=(path.parent,value,path.stat().st_mtime)
+                    except (OSError,ValueError):continue
+        return found
     def guarded():
         token=request.form.get('csrf') if request.form else (request.get_json(silent=True) or {}).get('csrf')
         if not session.get('csrf') or not secrets.compare_digest(token or '',session['csrf']):abort(403)
@@ -65,6 +83,17 @@ def create_app(run_root=RUNS):
     def env():
         session['csrf']=session.get('csrf') or secrets.token_hex(24)
         return jsonify(environment=environment_status(),csrf=session['csrf'])
+    @app.get('/api/recent')
+    def recent():
+        rows=sorted(catalog().items(),key=lambda x:x[1][2],reverse=True)[:30]
+        return jsonify(runs=[{'token':token,'run_id':value.get('run_id',path.name),'status':value['status'],
+            'policy_source':value.get('policy_source','not_run'),'split':value.get('split','development'),
+            'cost_usd':value.get('usage',{}).get('known_api_cost_estimate_usd',0)} for token,(path,value,_) in rows])
+    @app.get('/results/<token>/<path:name>')
+    def previous_result(token,name):
+        selected=catalog().get(token)
+        if selected is None:abort(404)
+        return send_from_directory(selected[0],name)
     @app.post('/api/start')
     def start():
         guarded()
@@ -123,4 +152,4 @@ def create_app(run_root=RUNS):
 
 def serve(port=8765):
     if not 1024<=port<=65535:raise ValueError('Use a valid unprivileged local port.')
-    create_app().run(host='127.0.0.1',port=port,debug=False,use_reloader=False)
+    create_app(result_roots=[RUNS.parent,ROOT/'runs']).run(host='127.0.0.1',port=port,debug=False,use_reloader=False)

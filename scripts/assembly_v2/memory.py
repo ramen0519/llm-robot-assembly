@@ -77,13 +77,22 @@ def incidents_from(rows,run_id,prepared,split,lineage_id,policy_source,final):
         output.append(e)
     return output
 
-def guidance_schema():
+def guidance_schema(incident=None):
     parameter={'type':'object','properties':{'name':{'type':'string','enum':['position_mm','quaternion_xyzw','opening_width_mm']},
        'unit':{'type':'string','enum':['mm','xyzw']},'value':{'type':'array','items':{'type':'number'},'minItems':1,'maxItems':4},
        'event_id':{'type':'string'}},'required':['name','unit','value','event_id'],'additionalProperties':False}
     properties={'summary':{'type':['string','null'],'maxLength':700},'action':{'type':['string','null'],'enum':['pick','insert','recover_alignment','replan_insert',None]},
        'parameters':{'type':'array','items':parameter},'evidence_refs':{'type':'array','items':{'type':'string'}},
        'checks':{'type':'array','items':{'type':'string','enum':['current_geometry','grasp_copy','installation_copy','main_completion_window']}}}
+    if incident is not None:
+        # IDs are copied from measured events; check/action IDs are not event
+        # citations. Let structured generation enforce this before validation.
+        ids=[e['id'] for e in incident['events']]
+        successful=[e for e in incident['events'] if e.get('executed') and not e.get('failure')]
+        properties['evidence_refs']['items']['enum']=ids
+        if successful:
+            parameter['properties']['event_id']['enum']=[e['id'] for e in successful]
+            properties['action']['enum']=sorted({e['proposal']['skill'] for e in successful})+[None]
     return {'type':'object','properties':properties,'required':list(properties),'additionalProperties':False}
 
 def validate_guidance(card,incident):
