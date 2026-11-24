@@ -2,7 +2,7 @@
 
 MuJoCo · UR3e 한 대 · Robotiq 2F-85로 완성 CAD 목표의 강체 조립을 시도한다. 최신 요구는 [구현 작업서 v2.0](docs/design_v2/3-ASSEMBLY_CODEX_HANDOFF_v2.0.md)과 [완료 프로파일 v1.2](docs/design_v2/2-ASSEMBLY_COMPLETION_PROFILE_v1.2.md)다. 이전 사각 형상·top-down·수직 삽입·10부품 제한은 현재 지원 범위의 정의가 아니다.
 
-**구현 범위와 실제 검증은 다르다.** 일반 메시 경로, 전체 파지 pose, 연속 완료 검사, 기록·검색·UI 연결을 추가했다. 실제 Astra 및 새 CAD의 전체 native→로봇 연결은 키·분해 실행 환경·자산 준비가 갖춰져야 검증된다. [실제 수행 결과와 미완료 사항](docs/STEP_29_GENERAL_MESH_V2.md)을 먼저 확인한다.
+**구현 범위와 실제 검증은 다르다.** 실제 Astra high의 2부품 조립과 같은 입력의 5회 시범 수집(5/5)을 확인했다. 별도 개발 시험에서는 실제 Astra 복구·지침 생성/등록과 다음 실행의 DINO 검색·물리 재검증을 확인했다. 일반 형상 포함 10부품 이상 전체 완주는 아직 미검증이다. [최신 실제 결과와 미완료 사항](docs/STEP_30_LIVE_ASTRA_V2.md), [일반 메시 구현 범위](docs/STEP_29_GENERAL_MESH_V2.md)를 확인한다.
 
 ## 실행 흐름
 
@@ -20,6 +20,8 @@ $assemblyPython = '.\runtime\luna-venv\Scripts\python.exe'
 ```
 
 UI: **http://127.0.0.1:8765**. 입력 선택, 환경 상태, 현재 단계, 목표 이미지, 실제 결과·영상·실패·등록·검색 기록을 보여준다. UI도 같은 Python 실행기를 호출한다. 실물 로봇 명령은 없다.
+
+현재 컴퓨터에서는 사용자 승인에 따라 새 결과와 메모리를 `F:\dev\llm-robot-assembly-data`에 저장한다. 코드는 C:에 유지한다. `config/local.storage.v2.json`의 `data_root` 또는 `ASSEMBLY_DATA_ROOT`로 공통 저장 위치를 바꿀 수 있다. 기존 기록은 이동/삭제하지 않았다. 마지막 확인용 UI는 **http://127.0.0.1:8767** 이며, 최근 실행 목록에서 CLI 결과도 볼 수 있다.
 
 완성 CAD 자료 한 개로 시작:
 
@@ -56,7 +58,7 @@ uv pip install --python .venv\Scripts\python.exe --index-url https://download.py
 - `scripts/run_assembly.py`, `scripts/run_assembly.ps1`: 현재 진입점.
 - `scripts/assembly_v12/`, `scripts/run_assembly_v12.py`: 이전 사각 프레임의 명시적 회귀 경로. 완료 기준·연구 수집에는 v2를 사용한다.
 - 공통 Mink IK, RRT-Connect, 관절 보간·서보 제어는 기존 코드를 재사용한다. Python과 MuJoCo가 수치/물리 검사를 수행하며 Astra가 모터 값을 직접 계산하지 않는다.
-- 새 기본 경험은 `runtime/memory/assembly_v2`. 이번 작업에서 이전 경험·실행 자료를 삭제하거나 성공 사례로 복원하지 않았다. 개발 검사용 메모리는 별도 run 폴더에 격리한다.
+- 기본 경험은 데이터 루트의 `runtime/memory/assembly_v2`. 이번 작업에서 이전 경험·실행 자료를 삭제하거나 성공 사례로 복원하지 않았다. 의도한 실패의 실제 Astra 지침은 `runtime/memory/assembly_v2_development_probe`에 격리하고 연구 수집에서 제외한다.
 
 수집·동결·평가·재생 명령은 [운영 안내](docs/ASSEMBLY_V2_OPERATIONS.md), 요구별 완료/미완료는 [STEP 29](docs/STEP_29_GENERAL_MESH_V2.md), 다음 작업은 [프로젝트 계획](docs/PROJECT_PLAN.md)에 있다.
 

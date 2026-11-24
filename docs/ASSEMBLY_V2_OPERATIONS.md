@@ -1,6 +1,6 @@
 # 일반 메시 조립 v2 운영 안내
 
-현재 검증 상태는 [STEP 29](STEP_29_GENERAL_MESH_V2.md)에 기록한다. 이 문서의 실행 예제 자체는 성공 증거가 아니다. 새 제품의 순서만 뒤집어 성공했다고 판단하지 않는다.
+일반 메시 구현은 [STEP 29](STEP_29_GENERAL_MESH_V2.md), 최신 실제 Astra 실행은 [STEP 30](STEP_30_LIVE_ASTRA_V2.md)에 기록한다. 이 문서의 실행 예제 자체는 성공 증거가 아니다. 새 제품의 순서만 뒤집어 성공했다고 판단하지 않는다.
 
 ## 1. 최초 공통 설정
 
@@ -23,6 +23,8 @@ $assemblyPython = '.\.venv\Scripts\python.exe'
 현재 PC의 기본 `.venv` 실행 파일은 Windows 앱 제어 정책에 차단되어 있어, 기존에 동작하는 `runtime/luna-venv`를 사용했다. OS 보안 설정을 변경하지 않았다. 렌더링과 실제 MuJoCo 물리는 이 환경에서 실행했다. 대화형 MuJoCo viewer의 DLL 차단은 별개이며 UI의 저장 영상 확인은 가능하다.
 
 ### 공통 작업장
+
+현재 컴퓨터의 공통 데이터 루트는 `F:\dev\llm-robot-assembly-data`다. 설정 파일은 Git에서 제외한 `config/local.storage.v2.json`이며 내용은 `{"data_root":"F:/dev/llm-robot-assembly-data"}`다. 다른 컴퓨터에서는 폴더를 정한 뒤 동일 설정을 만들거나 `ASSEMBLY_DATA_ROOT` 환경변수를 사용한다. 기본 CLI 결과, UI 결과/업로드, 기본 메모리가 이 루트를 공유한다. `--output`, `--memory-root`를 명시하면 해당 값이 우선한다. 입력 CAD·기존 실행·소스 코드를 자동 이동하지 않는다. E:는 계속 거부한다.
 
 `config/assembly_workcell.v2.json`에서 로봇 설치 위치·작업대 높이·전체 조립 위치/회전·공급 영역·물성·자원 한도를 설정한다. 이 값은 모든 제품에 공통이다. 현재 밀도 800 kg/m³와 마찰 등은 측정값이 아닌 가정값이다. 고정 베이스 하나를 지그로 지지하고 나머지는 자유 강체로 둔다.
 
@@ -100,6 +102,8 @@ $env:OPENAI_API_KEY = [System.Net.NetworkCredential]::new('', $assemblyKey).Pass
 
 브라우저에서 http://127.0.0.1:8765 를 연다. 제품 입력 → 준비/실행 선택 → 현재 부품/단계 → 결과 링크 → 측정값·실패·실제 영상·등록/검색 기록 순서다. UI는 같은 CLI를 실행한다. 개발용 로컬 서버이며 외부 공개·실물 로봇 제어 기능은 없다.
 
+현재 확인용 서버는 http://127.0.0.1:8767 이다. 최근 실행 목록에는 현재 데이터 루트와 기존 C: `runs`의 CLI/UI 결과가 함께 표시된다. 작업용 임시 키는 상시 서버에 영구 저장하지 않는다. 새 유료 실행을 UI에서 시작하려면 키가 있는 셸에서 UI를 새로 시작해야 한다. 기존 결과/영상 열기에는 키가 필요 없다.
+
 S0/S1은 단일 역할, R0/R1은 조립·복구 역할 분리다. 0은 검색 끔, 1은 검색 켬. UI는 development 실행이며 연구 수집/평가는 아래 동결 계획으로 실행한다.
 
 ## 5. 실제 수집 → 등록 → 동결 → 평가
@@ -120,6 +124,8 @@ S0/S1은 단일 역할, R0/R1은 조립·복구 역할 분리다. 0은 검색 �
 ```
 
 위 두 collect 명령은 대안이다. 둘 다 실행하면 시범이 중복된다. 이미 수행한 별도 시범 뒤 새 batch를 실행한다면 잔여 대상과 실제 잔여 예산으로 새 계획을 작성한다. 기존 batch를 덮어써 장부를 초기화하지 않는다.
+
+2026-11-25의 실제 시범은 `F:\dev\llm-robot-assembly-data\runs\v2_astra_pilot_01`에 있다. 당시 manifest는 같은 원본 입력 5회이며 모두 소비했다. 이를 새 제품의 본 수집 목록으로 간주하지 않는다. 이후 지침 형식 수정으로 코드 inventory가 달라졌으므로 다음 실험은 입력 manifest로 `plan-trials`를 다시 실행해야 한다. 이번 승인 총량과 실제 정산은 로컬 `runtime/session_spend_20261124.json`에 보존한다. 이 장부는 해당 세션 실행기의 기록이며 일반 CLI의 새 batch 예산을 자동 갱신하지 않는다. 새 승인 파일에는 실제 남은 한도만 적는다.
 
 `batch_result.json`의 started/completed/physical_success/eligible/generated/registered/pending/duplicate, 개별 audit·영상·사용량을 확인한다. 물리 실패 자체를 삭제하지 않는다. 해결된 사건도 지침 생성 예산이 부족하면 pending이며, 일반 성공 로그만으로 해결 사례가 생기지 않는다.
 
@@ -144,3 +150,14 @@ S0/S1은 단일 역할, R0/R1은 조립·복구 역할 분리다. 0은 검색 �
 `report.html`, `media/execution.mp4`, `final_verification.json`, `events.jsonl`, `incidents.json`, `retrieval.jsonl`, `registrations.json`, `metrics.csv`를 확인한다. 실패 PNG와 정확한 MuJoCo 상태는 `failures/`에 있다. `replay_bundle/`에는 실제 모델·상태·입력·충돌 자산·코드 hash가 들어간다. 원 run 없이 이 묶음 경로를 `--run`에 주어 재생할 수 있다. 재생은 저장 상태의 영상화이며 새 물리 시험이 아니다.
 
 현재 저장 상태는 20 Hz, 영상은 그중 실제 프레임을 선택한 5 fps다. 사이 프레임을 보간해 새 동작을 만들지 않는다. 물리 검사는 2 ms 간격으로 별도 수행한다. 주 실행 영상에는 copy/planner 상태가 섞이지 않는다.
+
+## 7. 실제 Astra 복구·지침 재사용의 개발 시험
+
+다음은 정상 입력에서 모델의 자연 실패율을 재는 명령이 아니다. 명시적으로 낮은 첫 파지를 복사 장면에서 검사해 간섭을 유발하고, 그 결과부터 실제 Astra가 복구/설치/지침 생성을 수행한다. 첫 검사 후보는 모델이 제안했다고 표시하지 않으며 주 장면에서는 실행할 수 없다. split=development에서만 허용하고, collection/evaluation에는 거절된다.
+
+```powershell
+& $assemblyPython -B scripts\run_assembly.py run --input runs\v2_memory_reuse_physics_01\prepared.json --policy astra --condition R0 --development-failure-probe config\v2_development_rejected_grasp.json --memory-root F:\dev\llm-robot-assembly-data\runtime\memory\assembly_v2_development_probe --seconds 600
+& $assemblyPython -B scripts\run_assembly.py run --input runs\v2_memory_reuse_physics_01\prepared.json --policy astra --condition R1 --development-failure-probe config\v2_development_rejected_grasp.json --memory-root F:\dev\llm-robot-assembly-data\runtime\memory\assembly_v2_development_probe --seconds 600
+```
+
+첫 실행의 등록은 다음 snapshot부터 검색된다. R1의 `retrieval.jsonl` → `events.jsonl`의 실제 Astra 제안·재검증 → `final_verification.json`을 함께 확인한다. 이 개발 사례를 독립 평가 메모리에 복사하지 않는다. 새로운 실행은 유료이므로 기존 총 승인의 실제 잔액 및 회당 제한 안에서만 수행한다.
