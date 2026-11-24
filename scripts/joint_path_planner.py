@@ -46,6 +46,7 @@ def plan_joint_path(motion, goal_arm, *, allow_support=True, allow_grasp=False, 
     started, checks, rejected = time.monotonic(), 0, 0
     rng = np.random.default_rng(seed)
     def budget():
+        if getattr(motion, 'budget', None): motion.budget.check('rrt_search')
         if time.monotonic() - started > max_time_s:
             raise _BudgetExpired()
     def extend(a, b):
@@ -131,7 +132,6 @@ def plan_tcp_path(motion, target_position, target_rotation, *, max_ik_iterations
             or type(max_ik_iterations) is not int or not 1 <= max_ik_iterations <= 1000):
         raise FailureEvent(FailureCode.INPUT_OR_PRECONDITION_INVALID, 'Invalid TCP goal/IK budget.')
     model, data = motion.model, motion.data
-    configuration = mink.Configuration(model, q=data.qpos.copy())
     task = mink.FrameTask(TCP_SITE_NAME, 'site', position_cost=1., orientation_cost=1., lm_damping=1e-3)
     task.set_target(mink.SE3.from_rotation_and_translation(mink.SO3.from_matrix(r), p))
     freeze = mink.DofFreezingTask(model, dof_indices=list(range(6, model.nv)))
@@ -139,25 +139,51 @@ def plan_tcp_path(motion, target_position, target_rotation, *, max_ik_iterations
     limits.lower[:6] = model.jnt_range[:6, 0] + 1e-6
     limits.upper[:6] = model.jnt_range[:6, 1] - 1e-6
     velocity_limit = mink.VelocityLimit(model, {name: 1. for name in JOINT_NAMES})
-    for iteration in range(max_ik_iterations + 1):
-        position_error, angle_error = pose_errors(configuration.data, p, r)
-        if position_error <= .0001 and angle_error <= math.radians(.05):
-            break
-        if iteration == max_ik_iterations:
-            raise FailureEvent(FailureCode.IK_NOT_CONVERGED, 'Endpoint IK budget exhausted; no physical command executed.')
+    # Mink remains the IK solver. A single starting posture can be trapped near
+    # a singularity for side/oblique tool orientations; test bounded alternatives
+    # in scratch configurations, never by resetting the live robot.
+    started=time.monotonic();time_limit=planner_options.get('max_time_s',15.)
+    seed=planner_options.get('seed',0);rng=np.random.default_rng(seed);attempts=[];last_error=None
+    starts=[data.qpos.copy()]
+    for _ in range(3):
+        q=data.qpos.copy();q[:6]+=rng.uniform(-1.5,1.5,6)
+        q[:6]=np.clip(q[:6],model.jnt_range[:6,0]+1e-5,model.jnt_range[:6,1]-1e-5);starts.append(q)
+    for seed_index,q in enumerate(starts):
+        configuration=mink.Configuration(model,q=q);converged=False;position_error=angle_error=None
+        for iteration in range(max_ik_iterations+1):
+            if getattr(motion,'budget',None):motion.budget.check('endpoint_ik')
+            if time.monotonic()-started>=time_limit:break
+            position_error,angle_error=pose_errors(configuration.data,p,r)
+            if position_error<=.0001 and angle_error<=math.radians(.05):converged=True;break
+            if iteration==max_ik_iterations:break
+            try:
+                velocity=mink.solve_ik(configuration,[task],.02,'daqp',limits=[limits,velocity_limit],constraints=[freeze])
+            except NoSolutionFound:break
+            if not np.isfinite(velocity).all():break
+            configuration.integrate_inplace(velocity,.02)
+        attempts.append({'seed_index':seed_index,'iterations':iteration,'converged':converged,
+                         'position_error_m':position_error,'orientation_error_rad':angle_error})
+        if not converged:continue
+        if not np.allclose(configuration.q[6:],data.qpos[6:],atol=1e-8,rtol=0):
+            raise FailureEvent(FailureCode.MODEL_OR_CONTROL_INVALID,'Endpoint IK modified frozen non-arm coordinates.')
+        remaining=time_limit-(time.monotonic()-started)
+        if remaining<=0:break
         try:
-            velocity = mink.solve_ik(configuration, [task], .02, 'daqp', limits=[limits, velocity_limit], constraints=[freeze])
-        except NoSolutionFound as exc:
-            raise FailureEvent(FailureCode.IK_NOT_CONVERGED, 'Endpoint IK solver did not find a solution.') from exc
-        if not np.isfinite(velocity).all():
-            raise FailureEvent(FailureCode.IK_NOT_CONVERGED, 'Non-finite endpoint IK update.')
-        configuration.integrate_inplace(velocity, .02)
-    if not np.allclose(configuration.q[6:], data.qpos[6:], atol=1e-8, rtol=0):
-        raise FailureEvent(FailureCode.MODEL_OR_CONTROL_INVALID, 'Endpoint IK modified frozen non-arm coordinates.')
-    plan, metadata = plan_joint_path(motion, configuration.q[:6], **planner_options)
+            options={**planner_options,'max_time_s':remaining}
+            plan,metadata=plan_joint_path(motion,configuration.q[:6],**options)
+            break
+        except FailureEvent as exc:
+            if exc.code not in (FailureCode.PLANNED_CONTACT,FailureCode.MOTION_PATH_NOT_FOUND):raise
+            last_error=exc;attempts[-1]['path_rejected']=exc.code.value
+    else:plan=None
+    if 'plan' not in locals() or plan is None:
+        code=last_error.code if last_error else FailureCode.IK_NOT_CONVERGED
+        raise FailureEvent(code,'No checked endpoint/path in the bounded multistart search; no physical command executed.',
+                           violations=[{'attempts':attempts,'time_limit_s':time_limit}])
     # The servo verifier measures against the requested Cartesian goal, not just
     # against the slightly approximate FK position of the IK solution.
     plan.target_position, plan.target_rotation = p.copy(), r.copy()
     motion.goal = {'kind': 'tcp_pose', 'frame': 'world', 'position_m': p.copy(), 'rotation_matrix': r.copy()}
     metadata.update(ik_iterations=iteration, ik_position_error_m=position_error, ik_orientation_error_rad=angle_error)
+    metadata.update(ik_multistart_attempts=attempts,endpoint_and_path_seconds=time.monotonic()-started)
     return plan, metadata

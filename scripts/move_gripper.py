@@ -7,7 +7,6 @@ from pathlib import Path
 import time
 
 import mujoco
-import mujoco.viewer
 import numpy as np
 
 from failure_report import FailureCode, FailureEvent
@@ -235,7 +234,8 @@ def main():
         if args.headless:
             rows = run_cycle(model, data)
         else:
-            with mujoco.viewer.launch_passive(model, data, show_left_ui=False, show_right_ui=False) as viewer:
+            from mujoco import viewer as viewer_module
+            with viewer_module.launch_passive(model, data, show_left_ui=False, show_right_ui=False) as viewer:
                 with viewer.lock():
                     set_camera(viewer.cam)
                     viewer.cam.lookat[:] = [0.05, -0.10, 0.23]

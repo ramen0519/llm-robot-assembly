@@ -1,0 +1,13 @@
+{
+  "schema": "assembly_trial_inputs/v2.0",
+  "memory_root": "C:/dev/llm-robot-assembly/runtime/memory/assembly_v2",
+  "shared_run_config": {
+    "policy": "astra", "seconds": 600,
+    "llm_config": "C:/dev/llm-robot-assembly/config/llm.astra-high.toml",
+    "encoder": "C:/dev/llm-robot-assembly/runtime/assets/dinov2-small"
+  },
+  "cases": [
+    {"lineage_id":"replace-with-collection-input-1","split":"collection","condition":"R0",
+     "prepared":"C:/dev/llm-robot-assembly/runs/REPLACE_WITH_PREPARED_INPUT/prepared.json"}
+  ]
+}

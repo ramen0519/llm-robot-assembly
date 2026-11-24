@@ -35,10 +35,12 @@ class CartesianPlan:
 class WorkcellMotion:
     """Local waypoint motion, not a global obstacle-avoiding planner or hardware driver."""
 
-    def __init__(self, model, data, verifier, on_sample=None):
+    def __init__(self, model, data, verifier, on_sample=None, budget=None):
         self.model, self.data, self.verifier = model, data, verifier
         self.controller = ArmPositionController(model)
         self.on_sample = on_sample
+        self.budget = budget
+        self.slip_reference = None
         self.stage = "initialise"
         self.goal = None
         self.gripper_command = 0.0
@@ -50,6 +52,7 @@ class WorkcellMotion:
         self.plans = []
 
     def _candidate(self, qpos, allow_support, allow_grasp):
+        if self.budget: self.budget.check('motion_candidate')
         # A geometric candidate has no executed dynamics or measured contact force.
         # Run the position/collision pipeline, not an unnecessary constraint-force solve.
         scratch = mujoco.MjData(self.model)
@@ -106,6 +109,7 @@ class WorkcellMotion:
             task.set_target(mink.SE3.from_rotation_and_translation(mink.SO3.from_matrix(goal_r), goal_p))
             converged = False
             for _ in range(201):
+                if self.budget: self.budget.check('cartesian_ik')
                 pe, re = pose_errors(configuration.data, goal_p, goal_r)
                 if pe <= 0.0001 and re <= math.radians(0.05):
                     converged = True
@@ -148,7 +152,7 @@ class WorkcellMotion:
         row = self.verifier.sample(self.data, self.reference, allow_support=allow_support, allow_grasp=allow_grasp)
         row["stage"] = self.stage
         if self.held_pose is not None:
-            self.verifier.check_held(self.data, row, self.held_pose)
+            self.verifier.check_held(self.data, row, self.slip_reference if self.slip_reference is not None else self.held_pose)
         if self.goal and self.goal["kind"] == "tcp_pose":
             pe, re = pose_errors(self.data, self.goal["position_m"], self.goal["rotation_matrix"])
             row["tcp_position_error_m"], row["tcp_orientation_error_rad"] = pe, re
@@ -157,6 +161,7 @@ class WorkcellMotion:
         return row
 
     def step(self, *, allow_support, allow_grasp):
+        if self.budget: self.budget.check('physics_step')
         previous_time = float(self.data.time)
         with checked_physics('gravity_feedforward'):
             self.controller.apply(self.data, self.reference, self.gripper_command)
@@ -183,6 +188,7 @@ class WorkcellMotion:
         return rows
 
     def execute(self, plan, *, allow_support, allow_grasp):
+        if self.budget: self.budget.check('execute_start')
         if (not math.isclose(self.data.time, plan.start_time_s, abs_tol=1e-10)
                 or not np.allclose(self.data.qpos, plan.start_qpos, atol=1e-10, rtol=0)
                 or not np.allclose(self.data.qvel, plan.start_qvel, atol=1e-10, rtol=0)

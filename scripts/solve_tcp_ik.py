@@ -8,7 +8,6 @@ import time
 import mink
 from mink.exceptions import MinkError, NoSolutionFound
 import mujoco
-import mujoco.viewer
 import numpy as np
 
 from failure_report import FailureCode, FailureEvent, capture_observation
@@ -170,7 +169,8 @@ def main():
         preview = mujoco.MjData(model)
         preview.qpos[:] = result.qpos
         mujoco.mj_forward(model, preview)
-        with mujoco.viewer.launch_passive(model, preview, show_left_ui=False, show_right_ui=False) as viewer:
+        from mujoco import viewer as viewer_module
+        with viewer_module.launch_passive(model, preview, show_left_ui=False, show_right_ui=False) as viewer:
             with viewer.lock():
                 set_tcp_camera(viewer.cam, preview)
             started = time.monotonic()

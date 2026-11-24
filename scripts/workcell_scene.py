@@ -179,8 +179,8 @@ def build_workcell_spec(config):
 
 def compile_workcell(spec, *, free_part_count=1):
     """Compile the robot and one free product part after optional fixed-fixture additions."""
-    if type(free_part_count) is not int or not 1 <= free_part_count <= 10:
-        raise ValueError('Expected 1 to 10 explicitly declared free product parts.')
+    if type(free_part_count) is not int or free_part_count < 0:
+        raise ValueError('Expected a nonnegative number of explicitly declared free product parts.')
     model = spec.compile()
     data = mujoco.MjData(model)
     # Composition extends home with the new free body's configured pose.

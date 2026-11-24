@@ -1,0 +1,5 @@
+{
+  "mode": "pose", "frame": "part_local",
+  "position_mm": [0, 0, -20], "quaternion_xyzw": [0, 1, 0, 0],
+  "opening_width_mm": 30, "parent_candidate_id": null
+}

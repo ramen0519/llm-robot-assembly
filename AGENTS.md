@@ -4,7 +4,7 @@
 
 - Read `README.md` and the relevant sections of `docs/PROJECT_PLAN.md` before implementation.
 - Build a working MuJoCo simulation before connecting real hardware.
-- Keep the final target near 10 product parts; smaller assemblies are development milestones.
+- Latest scope: ASSEMBLY_CODEX_HANDOFF_v2.0 and ASSEMBLY_COMPLETION_PROFILE_v1.2 in docs/design_v2. Preserve square frames as regression cases, but do not restrict production to square parts, top-down grasps, vertical insertion, or 10 parts. Apply explicit finite resource limits.
 - Use one arm. Preserve the single LangGraph LLM policy and the optional assembly/recovery agent pair behind the same executor, observations, tools and shared episode budget. Label live calls, archived decisions and scripted tests by their actual source. Fine-tuning is deferred.
 - Coordinate agents with ordinary graph code and serialize robot commands through one executor and verifier. First compare single/multi assembly control with the same model, tools, observations, knowledge and total system budget; keep the external planning module/output fixed.
 - Treat the laboratory presentation as reference material, not as user-authored code or proof that reusable code is available.
@@ -18,6 +18,9 @@
 - Separate agent policy, skill execution, motion, environment adapters, verification, and memory.
 - Start with deterministic scripted skills before adding LLM planning.
 - Do not count teleportation, artificial attachment, mock results, or LLM self-evaluation as physical assembly success.
+- Use the common completion profile for reference, local installation, final same-window verification, registration, audit and UI. Never substitute copy success for main execution or scripted tests for actual Astra validation.
+- Preserve original target SE3, mesh-derived mass/inertia and collision-quality evidence. Mark missing native/API/collection validation not_run. Do not touch E: or real hardware. Keep original disassembly inputs read-only.
+- Current production entry is scripts/run_assembly.py -> assembly_v2. The explicit scripts/run_assembly_v12.py entry is retained only for square-frame regression.
 - Keep simulation and real observations, validation records, and success metrics distinct.
 - Check the robot, gripper, carried part, and assembled parts along motion paths.
 - Never replay an uncertain physical command blindly. Re-observe before deciding whether to continue.

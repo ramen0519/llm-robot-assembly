@@ -1,0 +1,20 @@
+{
+  "schema": "assembly_workcell/v2.0",
+  "robot": "ur3e", "gripper": "robotiq_2f85",
+  "tabletop_z_m": 0.75, "robot_base_world_m": [0.0, 0.20, 0.75],
+  "assembly_center_xy_m": [-0.12, -0.12], "assembly_rotation_xyzw": [0, 0, 0, 1],
+  "grid_first_center_xy_m": [0.13, -0.10], "grid_margin_m": 0.03,
+  "table_margin_m": 0.10, "table_min_size_xy_m": [1.0, 0.8],
+  "spawn_clearance_m": 0.0005, "max_grid_cells": 400,
+  "resources": {"max_vertices_total": 1000000, "max_collision_geoms": 3000, "max_hulls_per_body": 256,
+                "max_geometry_cells": 12000, "preparation_seconds": 300, "decomposition_seconds_per_part": 45,
+                "max_raw_candidates": 256, "max_presented_candidates": 18, "surface_samples": 512,
+                "candidate_seconds": 20, "rrt_seconds": 15, "ik_iterations": 200,
+                "postprocess_seconds": 180, "encoder_seconds": 60},
+  "collision": {"maximum_surface_error_m": 0.00025, "volume_relative_error_max": 0.02,
+                "coacd_threshold_m": 0.00015, "quality_samples": 2048, "seed": 0},
+  "density_kg_m3": 800.0, "minimum_mass_kg": 0.001,
+  "friction": [0.8, 0.005, 0.0001], "seed": 0,
+  "fixture": "fixed_base_bolted_to_table",
+  "assumptions": "Common simulation defaults, not measured material data. One rigidly supported declared/verified base; other parts remain dynamic. Original CAD relative poses are preserved."
+}

@@ -13,7 +13,7 @@ from assembly_v12.contracts import check_export,import_export,read,write,sha,dig
 
 
 def inventory(root,d):
-    d['artifacts']={str(p.relative_to(root)):sha(p) for p in root.rglob('*') if p.is_file() and p.name!='export_v1.json'}
+    d['artifacts']={p.relative_to(root).as_posix():sha(p) for p in root.rglob('*') if p.is_file() and p.name!='export_v1.json'}
     d['run_hash']=digest(d['artifacts']);write(root/'export_v1.json',d)
 
 

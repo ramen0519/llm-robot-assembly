@@ -5,7 +5,6 @@ import math
 import time
 
 import mujoco
-import mujoco.viewer
 import numpy as np
 
 from ur3e_with_gripper import load_robot_with_gripper, mount_error
@@ -140,7 +139,8 @@ def main():
         print("Nominal model TCP, not calibrated hardware TCP. Static preview: no mj_step().", flush=True)
         if args.check:
             return 0
-        with mujoco.viewer.launch_passive(model, data, show_left_ui=False, show_right_ui=False) as viewer:
+        from mujoco import viewer as viewer_module
+        with viewer_module.launch_passive(model, data, show_left_ui=False, show_right_ui=False) as viewer:
             with viewer.lock():
                 set_tcp_camera(viewer.cam, data)
             started = time.monotonic()

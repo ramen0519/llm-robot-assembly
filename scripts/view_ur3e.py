@@ -6,7 +6,6 @@ from pathlib import Path
 import time
 
 import mujoco
-import mujoco.viewer
 
 
 SCENE_PATH = Path(__file__).resolve().parents[1] / "scenes" / "ur3e_preview.xml"
@@ -67,7 +66,8 @@ def main():
     if args.check:
         return
 
-    with mujoco.viewer.launch_passive(
+    from mujoco import viewer as viewer_module
+    with viewer_module.launch_passive(
         model, data, show_left_ui=False, show_right_ui=False
     ) as viewer:
         with viewer.lock():

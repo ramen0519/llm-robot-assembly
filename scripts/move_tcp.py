@@ -8,7 +8,6 @@ from pathlib import Path
 import time
 
 import mujoco
-import mujoco.viewer
 import numpy as np
 
 from failure_report import FailureCode, FailureEvent, TrialRecorder, capture_observation
@@ -318,7 +317,8 @@ def execute_trial(*, headless=True, output_root=RUNS_ROOT):
         if headless:
             rows = run_motion(model, data, plan, trace_path=recorder.trace_path, on_valid_sample=recorder.remember_valid)
         else:
-            with mujoco.viewer.launch_passive(model, data, show_left_ui=False, show_right_ui=False) as viewer:
+            from mujoco import viewer as viewer_module
+            with viewer_module.launch_passive(model, data, show_left_ui=False, show_right_ui=False) as viewer:
                 with viewer.lock():
                     set_tcp_camera(viewer.cam, data)
                 rows = run_motion(model, data, plan, viewer, recorder.trace_path, recorder.remember_valid)
