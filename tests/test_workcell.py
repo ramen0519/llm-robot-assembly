@@ -25,8 +25,11 @@ class WorkcellTests(unittest.TestCase):
         self.assertEqual((model.nq, model.nv, model.nu, model.neq), (21, 20, 7, 3))
         # Upstream equalities are unnamed: check their actual constrained objects, not labels.
         for i in range(model.neq):
-            self.assertIn(model.eq_type[i], (mujoco.mjtEq.mjEQ_CONNECT, mujoco.mjtEq.mjEQ_JOINT))
-            lookup = model.joint if model.eq_type[i] == mujoco.mjtEq.mjEQ_JOINT else model.body
+            # Compare numeric enum values explicitly: pybind enum == numpy.int32
+            # is asymmetric in this binding; tuple membership uses that reverse order.
+            eq_type = int(model.eq_type[i])
+            self.assertIn(eq_type, (int(mujoco.mjtEq.mjEQ_CONNECT), int(mujoco.mjtEq.mjEQ_JOINT)))
+            lookup = model.joint if eq_type == int(mujoco.mjtEq.mjEQ_JOINT) else model.body
             for object_id in (model.eq_obj1id[i], model.eq_obj2id[i]):
                 self.assertTrue(lookup(int(object_id)).name.startswith("gripper_"))
         report = check_workcell(model, data, config)

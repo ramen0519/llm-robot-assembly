@@ -67,7 +67,7 @@ class Trials(unittest.TestCase):
                 run.assert_not_called()
 
     def test_paid_batch_without_aggregate_cap_stops_before_client(self):
-        config=Path(__file__).resolve().parents[1]/'config/llm.astra-high-native-frame.toml'
+        config=Path(__file__).resolve().parents[1]/'config/llm.astra-high.toml'
         self.manifest['shared_run_config'].update(policy='astra',llm_config=str(config));self.freeze()
         with patch('llm_runtime.create_openai_client') as client:
             with self.assertRaisesRegex(InputError,'aggregate budget'):

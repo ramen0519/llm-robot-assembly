@@ -248,13 +248,14 @@ def main(argv=None):
             p.add_argument('--condition',choices=CONDITIONS,default='S0')
             p.add_argument('--policy',choices=['scripted','astra'],default='scripted')
             p.add_argument('--llm-config'); p.add_argument('--seconds',type=float,default=300)
-            p.add_argument('--memory-root',default=str(ROOT/'runtime/memory/assembly_v12_verified'))
+            p.add_argument('--memory-root',default=str(ROOT/'runtime/memory/assembly_v12'))
             p.add_argument('--snapshot'); p.add_argument('--encoder')
             p.add_argument('--split',choices=['development','collection','evaluation'],default='development')
             p.add_argument('--family',default='unspecified')
             p.add_argument('--scenario',choices=['nominal','alignment_offset'],default='nominal')
             p.add_argument('--first-grasp'); p.add_argument('--scripted-guidance',action='store_true')
     p=sub.add_parser('freeze-memory'); p.add_argument('root'); p.add_argument('output')
+    p=sub.add_parser('memory-status'); p.add_argument('--memory-root',default=str(ROOT/'runtime/memory/assembly_v12'))
     p=sub.add_parser('plan-trials'); p.add_argument('manifest'); p.add_argument('output'); p.add_argument('--snapshot')
     for command in ('collect','evaluate'):
         p=sub.add_parser(command); p.add_argument('manifest'); p.add_argument('output'); p.add_argument('--max-runs',type=int,default=1)
@@ -267,7 +268,16 @@ def main(argv=None):
             parser.error('Use 5–1800 seconds and an explicit approved LLM configuration for Astra.')
         result,_=pipeline(args)
         return 0 if result['status'] in ('success','prepared_geometry_and_layout') else 1
-    if args.command=='freeze-memory':
+    if args.command=='memory-status':
+        from .memory import Library
+        library=Library(args.memory_root,allowed_splits=('development','collection','evaluation'))
+        counts=dict.fromkeys(('development','collection','evaluation'),0)
+        for row in library.entries:
+            counts[library._archive(row)['experience']['split']]+=1
+        print(json.dumps({'memory_root':str(location(args.memory_root)), 'registered_cases':len(library.entries),
+                          'guidance_cards':len(library.entries),'by_split':counts,
+                          'snapshot_id':library.snapshot['id'],'api_calls':0},ensure_ascii=False))
+    elif args.command=='freeze-memory':
         from .memory import Library
         library=Library(args.root); write(args.output,library.snapshot)
     elif args.command=='plan-trials':

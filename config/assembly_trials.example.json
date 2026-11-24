@@ -1,6 +1,6 @@
 {
   "schema": "assembly_trial_inputs/v1.2",
-  "memory_root": "runtime/memory/assembly_v12_verified",
+  "memory_root": "runtime/memory/assembly_v12",
   "shared_run_config": {
     "policy": "scripted",
     "seconds": 300

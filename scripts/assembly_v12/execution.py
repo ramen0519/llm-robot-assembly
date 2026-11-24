@@ -11,18 +11,16 @@ import numpy as np
 from langgraph.graph import START, END, StateGraph
 from langsmith import tracing_context
 
-from assembly_graph import _repairable_grasp
-from assembly_policy import allowed_skills, validate_proposal
+from .action_contract import repairable_grasp, allowed_skills, validate_proposal, snapshot
 from failure_report import FailureCode, FailureEvent, json_safe
 from insertion_recovery import alignment_observation, recover_alignment
 from llm_runtime import ApiLedger, create_openai_client, load_llm_config
-from openai_policy import OpenAIAssemblyPolicy, _tool_arguments
-from pick_place_graph import _snapshot
+from .responses import _tool_arguments
 
 from .contracts import append, digest, read, write
 from .context import History, SharedPolicy, Scripted, world_pose
 from .media import Recorder, state
-from .memory import Incidents, Library, Encoder, scope_for, validate_guidance
+from .memory import Incidents, Library, Encoder, scope_for, validate_guidance, DEFAULT_MEMORY
 from .scene import build_scene, ObservedSkills
 from .metrics import write_metrics
 from .artifacts import versions,report
@@ -85,7 +83,7 @@ def run(prepared, folder, *, mode='single', memory=False, policy_kind='scripted'
             'policy_decision_evaluated':False,'input_source_run_hash':prepared['source_run_hash']}
     incidents=Incidents(run_id,split,family,lineage_id)
     encoder=Encoder(encoder_path) if encoder_path else None
-    library=Library(memory_root or folder.parent.parent/'memory_v12',snapshot=frozen,encoder=encoder,
+    library=Library(memory_root or DEFAULT_MEMORY,snapshot=frozen,encoder=encoder,
                     allowed_splits=('collection',) if split=='evaluation' else ('collection','development'),
                     exclude_runs=(run_id,))
     write(folder/'memory_snapshot.json',library.snapshot)
@@ -154,7 +152,7 @@ def run(prepared, folder, *, mode='single', memory=False, policy_kind='scripted'
                     stopped_reason='control_generation_budget'
                     return {'status':'stopped','turns':graph_state['turns']}
                 revision+=1
-                observation=_snapshot(skills)
+                observation=snapshot(skills)
                 measured=skills.verifier.sample(data,skills.motion.reference,allow_support=True,
                                                 allow_grasp=skills.motion.held_pose is not None)
                 if skills.motion.held_pose is not None:
@@ -193,7 +191,7 @@ def run(prepared, folder, *, mode='single', memory=False, policy_kind='scripted'
                     'goal_assembly_relations':{k:registry[active][k] for k in ('requires','mating_ids','support_ids')},
                     'active_role':role,'observation_revision':revision,'observation':observation,'completed':completed,
                     'failure':pending,'failures':[latest_failure] if latest_failure else [],'failure_event':latest_failure,
-                    'experiences':cards,'recipes':[],'last_verification':None,'recovery_budget_remaining':1-alignment_used,
+                    'experiences':cards,'last_verification':None,'recovery_budget_remaining':1-alignment_used,
                     'transport_replan_budget_remaining':1-replan_used,'transport_replans':replan_used,
                     'transport_replan':skills.insert_replan_context() if pending and 'replan_insert' in permitted else None,
                     'allowed_skills':permitted,'remaining_budgets':{'grasps':3-len(trials),'alignment':1-alignment_used,
@@ -215,7 +213,7 @@ def run(prepared, folder, *, mode='single', memory=False, policy_kind='scripted'
                 print(f'{active} {role} {proposal["skill"]} revision={revision}',flush=True)
                 response={'status':'stopped','executed':False}
                 try:
-                    if observation!=_snapshot(skills): raise ValueError('Stale observation before action.')
+                    if observation!=snapshot(skills): raise ValueError('Stale observation before action.')
                     action=proposal['skill']
                     if action=='stop':
                         stopped_reason=proposal['reason']; return {'status':'stopped','turns':graph_state['turns']+1}
@@ -235,12 +233,12 @@ def run(prepared, folder, *, mode='single', memory=False, policy_kind='scripted'
                             event['scope']=scope_for(trial,geometry,['pick','stop'],'UR3e/2F85/FrameSkills/vertical-v1')
                             response={'status':'preflight_rejected','executed':False,'failure':trial}
                             recover_focus=True
-                            if not _repairable_grasp(trial) or len(trials)>=3:
+                            if not repairable_grasp(trial) or len(trials)>=3:
                                 stopped_reason='preflight_not_repairable_or_grasp_budget'
                                 return {'status':'stopped','turns':graph_state['turns']+1}
                             return {'status':'running','turns':graph_state['turns']+1}
                         record.check_id=None
-                        if observation!=_snapshot(skills): raise ValueError('Main scene changed during copy check.')
+                        if observation!=snapshot(skills): raise ValueError('Main scene changed during copy check.')
                         prepared['preparation_checks']['robot_access'][active]='full_pick_insert_copy_pass'
                         result['preparation_ready']=all(v=='full_pick_insert_copy_pass' for v in prepared['preparation_checks']['robot_access'].values())
                         event['executed']=True

@@ -4,8 +4,8 @@ from copy import deepcopy
 import json
 from pathlib import Path
 
-from assembly_policy import validate_proposal
-from openai_policy import OpenAIAssemblyPolicy, build_request, parse_proposal
+from .action_contract import validate_proposal
+from .responses import ResponsesTransport, build_request, parse_proposal
 
 from .contracts import append, read, write
 
@@ -16,7 +16,7 @@ def world_pose(position_m, quaternion_xyzw):
 
 
 def measured_packet(context):
-    from openai_policy import compact_context
+    from .responses import compact_context
     packet = compact_context(context)
     w = context['observation']['workcell']
     current = w['part']; joint = w['assembly_joint']
@@ -83,7 +83,7 @@ class History:
         self.pending = None
 
 
-class SharedPolicy(OpenAIAssemblyPolicy):
+class SharedPolicy(ResponsesTransport):
     def __init__(self, config, client, ledger, history, prompts, role):
         super().__init__(config,client,ledger,role=role)
         self.history, self.prompts = history, prompts
@@ -108,7 +108,7 @@ class SharedPolicy(OpenAIAssemblyPolicy):
     def _propose(self, context):
         if self.history.pending:
             raise ValueError('Unpaired tool call in shared history.')
-        request = build_request(self.config,context,role=self.role)
+        request = build_request(self.config,context)
         packet = measured_packet(context)
         self.history.add({'role':'user','content':json.dumps(packet,ensure_ascii=False,allow_nan=False)})
         request['input'] = deepcopy(self.history.items)

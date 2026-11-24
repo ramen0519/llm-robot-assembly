@@ -10,6 +10,7 @@ import numpy as np
 
 from .contracts import append, digest, read, sha, write, relative
 
+DEFAULT_MEMORY = Path(__file__).resolve().parents[2]/'runtime/memory/assembly_v12'
 DOMAIN = 'assembly_simulation/v1.2'
 FIELDS = {'applies_when','strategy','checks','evidence_refs'}
 INSTALL_CHECKS = {'released','target_position_under_1mm','target_orientation_under_1deg',

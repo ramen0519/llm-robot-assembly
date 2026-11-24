@@ -6,7 +6,7 @@ import numpy as np
 
 from assembly_skills import AssemblySkills, HOVER_M, LIFT_M
 from failure_report import FailureCode, FailureEvent, json_safe
-from insertion_scene import BASE_NAME
+BASE_NAME = 'assembly_base'  # Fixed fixture body shared by the current CAD-driven scene.
 from view_tcp import read_tcp_pose
 from workcell_motion import WorkcellMotion
 from workcell_verification import WorkcellVerifier

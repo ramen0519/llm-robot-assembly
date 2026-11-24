@@ -5,15 +5,16 @@ from unittest.mock import patch
 import mujoco
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from failure_report import FailureCode, FailureEvent
-from insertion_scene import build_insertion_scene
-from insertion_skills import InsertionSkills
+from workcell_scene import build_workcell, load_config
+from assembly_skills import AssemblySkills
 from simulation_warnings import checked_physics
 
 
 class SimulationWarningsTests(unittest.TestCase):
     def test_native_warning_stops_before_a_valid_sample_and_restores_callback(self):
-        model, data, config, joint = build_insertion_scene()
-        skills = InsertionSkills(model, data, config, joint)
+        config = load_config()
+        model, data = build_workcell(config)
+        skills = AssemblySkills(model, data, config)
         old_callback = mujoco.get_mju_user_warning()
         real_step = mujoco.mj_step
         def step_with_diagnostic(m, d):

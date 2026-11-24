@@ -5,13 +5,13 @@ from unittest.mock import patch
 import mujoco
 import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
-from multi_post_scene import build_multi_post_scene
+from workcell_scene import build_workcell, load_config
 from move_tcp import ArmPositionController
 
 
 class GravityBiasTests(unittest.TestCase):
     def test_bias_matches_full_forward_and_does_not_solve_contacts(self):
-        model, live, _ = build_multi_post_scene(4)
+        model, live = build_workcell(load_config())
         controller = ArmPositionController(model)
         reference = mujoco.MjData(model)
         for offset in (0., .1, -.1):
