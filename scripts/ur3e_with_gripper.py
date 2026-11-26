@@ -12,10 +12,13 @@ ROOT = Path(__file__).resolve().parents[1]
 GRIPPER_PATH = ROOT / "models/robotiq_2f85/2f85.xml"
 
 
-def build_robot_spec():
+def build_robot_spec(*, fingertip_profile=None):
     """Return a fresh editable composition; source model files remain unchanged."""
     arm = mujoco.MjSpec.from_file(str(SCENE_PATH))
     gripper = mujoco.MjSpec.from_file(str(GRIPPER_PATH))
+    if fingertip_profile is not None:
+        from assembly_v2.tooling import apply_fingertips
+        apply_fingertips(gripper, fingertip_profile)
 
     # Global contact settings come from the gripper; keep the arm's implicitfast integrator.
     arm.option.cone = gripper.option.cone

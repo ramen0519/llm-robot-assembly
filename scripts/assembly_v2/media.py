@@ -24,6 +24,17 @@ class Recorder(PreviousRecorder):
         if value.get('state'):
             for field in ('state','png'):
                 if value.get(field):value[field]=Path(value[field]).as_posix()
+            if not value.get('oblique_png'):
+                try:
+                    scratch=mujoco.MjData(self.model)
+                    mujoco.mj_setState(self.model,scratch,np.load(self.folder/value['state'],allow_pickle=False),STATE)
+                    mujoco.mj_forward(self.model,scratch)
+                    image=self.folder/'failures'/(Path(value['state']).stem+'_oblique.png')
+                    target=scratch.body(body_name(self.part_id,self.prepared['base_id'])).xpos.copy()
+                    self.render(scratch,image,target=target,elevation=-20)
+                    value.update(oblique_png=image.relative_to(self.folder).as_posix(),oblique_png_sha256=sha(image),
+                        oblique_source=value['source'],oblique_same_saved_state=True)
+                except Exception as exc:value['oblique_render_error']=type(exc).__name__+': '+str(exc)[:200]
             write(self.folder/'failures'/(Path(value['state']).stem+'.json'),value)
         return value
 
@@ -94,7 +105,11 @@ def render_worker(folder,output_name,seconds):
     with mujoco.Renderer(model,height=320,width=320) as renderer:
         for output_index,index in enumerate(selected):
             value=values[index]
-            budget.check('frame_render');mujoco.mj_setState(model,data,value,STATE);mujoco.mj_forward(model,data)
+            budget.check('frame_render');mujoco.mj_setState(model,data,value,STATE)
+            # Recorded-state visualization needs positions, not another force
+            # solve. Dynamics, force measurements and verification use the full
+            # physical pipeline elsewhere. Source pixels were compared exactly.
+            mujoco.mj_fwdPosition(model,data)
             renderer.update_scene(data,camera=camera);pixels=renderer.render().copy()
             png(frames/f'{output_index:06d}.png',pixels)
             if index in (0,len(values)-1):png(folder/'media'/('initial.png' if index==0 else 'final.png'),pixels)

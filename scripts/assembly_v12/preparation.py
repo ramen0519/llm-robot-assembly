@@ -18,7 +18,7 @@ def unsupported(message):
     raise InputError('unsupported_execution_scope', message)
 
 
-def solid_cells(vertices, faces, limit=12000):
+def solid_cells(vertices, faces, limit=12000, *, surface_planes_only=False):
     # Canonicalize coincident OBJ vertices before checking the closed surface.
     v, inv = np.unique(np.round(vertices, 9), axis=0, return_inverse=True)
     f = inv[faces]
@@ -34,7 +34,12 @@ def solid_cells(vertices, faces, limit=12000):
     norms = np.linalg.norm(cross, axis=1)
     if np.any(norms < 1e-14) or np.any(np.max(np.abs(cross/norms[:, None]), axis=1) < 1-1e-7):
         unsupported('Non-orthogonal/curved faces need another supported execution template.')
-    axes = [np.unique(v[:, i]) for i in range(3)]
+    # Interior triangulation edges cannot change occupancy in a closed orthogonal solid.
+    # Use only physical boundary planes when requested by the general-mesh preparer.
+    if surface_planes_only:
+        axes = [np.unique(triangles[np.abs(cross[:, i])/norms > 1-1e-7, :, i]) for i in range(3)]
+    else:
+        axes = [np.unique(v[:, i]) for i in range(3)]
     sizes = [len(a)-1 for a in axes]
     if np.prod(sizes) > limit:
         unsupported('Orthogonal decomposition resource limit exceeded.')

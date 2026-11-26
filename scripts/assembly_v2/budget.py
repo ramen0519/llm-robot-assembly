@@ -14,6 +14,9 @@ class Budget:
     def remaining(self,limit=None):
         self.check(); value=self.deadline-self.clock()
         return max(.001,min(value,limit)) if limit is not None else max(.001,value)
+    def seconds_for_report(self):
+        value=self.remaining()
+        return round(value,3) if math.isfinite(value) else None
     def process(self,args,*,timeout=None,**kwargs):
         self.check('process_start')
         result=subprocess.run(args,timeout=self.remaining(timeout),**kwargs)
@@ -27,3 +30,13 @@ class ControlBudget:
     def begin(self):
         if self.used>=self.limit:raise RuntimeError('control_generation_budget')
         self.used+=1
+
+
+class DevelopmentBudget(Budget):
+    """Explicit API-free development without a global wall-clock cutoff.
+
+    The caller enforces scripted/development. Cancellation and each finite
+    planning/motion slice remain active. This never expands an API budget.
+    """
+    def __init__(self, *, clock=time.monotonic, cancelled=None):
+        self.clock, self.deadline, self.cancelled = clock, float('inf'), cancelled

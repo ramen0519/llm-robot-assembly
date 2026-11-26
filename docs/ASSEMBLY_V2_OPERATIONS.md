@@ -1,6 +1,6 @@
 # 일반 메시 조립 v2 운영 안내
 
-일반 메시 구현은 [STEP 29](STEP_29_GENERAL_MESH_V2.md), 최신 실제 Astra 실행은 [STEP 30](STEP_30_LIVE_ASTRA_V2.md)에 기록한다. 이 문서의 실행 예제 자체는 성공 증거가 아니다. 새 제품의 순서만 뒤집어 성공했다고 판단하지 않는다.
+일반 메시 구현은 [STEP 29](STEP_29_GENERAL_MESH_V2.md), 이전 실제 Astra 실행은 [STEP 30](STEP_30_LIVE_ASTRA_V2.md), 최신 UI 시범과 시간 한도 중단은 [STEP 53](STEP_53_ASTRA_UI_TRIAL.md)에 기록한다. 이 문서의 실행 예제 자체는 성공 증거가 아니다. 새 제품의 순서만 뒤집어 성공했다고 판단하지 않는다.
 
 ## 1. 최초 공통 설정
 
@@ -35,10 +35,10 @@ $assemblyPython = '.\.venv\Scripts\python.exe'
 `config/disassembly_bridge.wsl.example.json`은 현재 공통 연결 예제다. native ASAP/RedMax와 STEP importer가 설치된 Python 및 저장소 경로를 확인한다. 원 분해 프로젝트는 수정하지 않고 조립 저장소의 기존 연결용 사본을 호출한다.
 
 ```powershell
-wsl -d ASAP-Ubuntu -- /bin/echo assembly_bridge_ready
+& .\runtime\luna-venv\Scripts\python.exe -B scripts\run_assembly.py check-bridge --output 'F:\dev\llm-robot-assembly-data\research\NEW_BRIDGE_CHECK' --seconds 30
 ```
 
-이 명령이 응답해야 raw CAD→native 검증→export 연결을 실행할 수 있다. 작업 중인 다른 WSL 환경을 임의 종료하거나 초기화하지 않는다. 이미 검증된 `export_v1.json`과 그 전체 증거 폴더를 입력하면 이 단계를 재실행하지 않는다. 다른 분기의 성공 기록은 섞지 않는다.
+이 명령이 `bridge_ready`를 반환해야 raw CAD→native 검증→export 연결을 실행할 수 있다. 보통 접속이 5초 안에 응답하지 않으면 설정에서 켠 동일 배포판의 systemd 환경 접속을 시도한다. systemd PID와 동일 native 파일 해시·RedMax import를 검사하며 Linux root 계정을 쓰는 명시적 공통 설정이다. [실제 검증과 한계](STEP_49_NATIVE_INPUT_BRIDGE.md)를 확인한다. 작업 중인 다른 WSL 환경을 임의 종료하거나 초기화하지 않는다. 이미 검증된 `export_v1.json`과 그 전체 증거 폴더를 입력하면 이 단계를 재실행하지 않는다. 다른 분기의 성공 기록은 섞지 않는다.
 
 ### DINO 가중치
 
@@ -50,7 +50,7 @@ wsl -d ASAP-Ubuntu -- /bin/echo assembly_bridge_ready
 
 ### 모델 설정과 키
 
-`config/llm.astra-high.toml`: Astra high, 전역 생성 요청 최대 36회·입력 8,000/출력 2,048 토큰·설정 비용 상한 $1.50. 이 설정은 새로운 지출 승인이 아니다. 단일 역할과 조립/복구 역할은 한 모델·공유 대화·도구·전역 장부를 사용한다. 제어 생성 `4N+4`는 전역 예산과 별도로 검사한다.
+`config/llm.astra-high.toml`: Astra high, 전역 생성 요청 최대 36회·요청당 입력 24,000/출력 2,048 토큰·회차 전체 361,728토큰·설정 비용 상한 $1.50. 이 설정은 새로운 지출 승인이 아니다. 단일 역할과 조립/복구 역할은 한 모델·공유 대화·도구·전역 장부를 사용한다. 제어 생성 `4N+4`는 전역 예산과 별도로 검사한다.
 
 키가 실행 프로세스에 없으면 `not_run`으로 종료한다. 이미 등록한 키를 해당 셸에 전달하거나, 필요한 경우 값을 출력하지 않고 입력한다.
 
@@ -102,7 +102,7 @@ $env:OPENAI_API_KEY = [System.Net.NetworkCredential]::new('', $assemblyKey).Pass
 
 브라우저에서 http://127.0.0.1:8765 를 연다. 제품 입력 → 준비/실행 선택 → 현재 부품/단계 → 결과 링크 → 측정값·실패·실제 영상·등록/검색 기록 순서다. UI는 같은 CLI를 실행한다. 개발용 로컬 서버이며 외부 공개·실물 로봇 제어 기능은 없다.
 
-현재 확인용 서버는 http://127.0.0.1:8767 이다. 최근 실행 목록에는 현재 데이터 루트와 기존 C: `runs`의 CLI/UI 결과가 함께 표시된다. 작업용 임시 키는 상시 서버에 영구 저장하지 않는다. 새 유료 실행을 UI에서 시작하려면 키가 있는 셸에서 UI를 새로 시작해야 한다. 기존 결과/영상 열기에는 키가 필요 없다.
+현재 코드를 반영하려면 위 명령으로 UI를 시작한다. 서버가 항상 실행 중이라고 가정하지 않는다. 최근 실행 목록에는 현재 데이터 루트와 기존 C: `runs`의 CLI/UI 결과가 함께 표시된다. 작업용 임시 키는 상시 서버에 영구 저장하지 않는다. 새 유료 실행을 UI에서 시작하려면 키가 있는 셸에서 UI를 새로 시작해야 한다. 기존 결과/영상 열기에는 키가 필요 없다.
 
 S0/S1은 단일 역할, R0/R1은 조립·복구 역할 분리다. 0은 검색 끔, 1은 검색 켬. UI는 development 실행이며 연구 수집/평가는 아래 동결 계획으로 실행한다.
 
@@ -149,7 +149,7 @@ S0/S1은 단일 역할, R0/R1은 조립·복구 역할 분리다. 0은 검색 �
 
 `report.html`, `media/execution.mp4`, `final_verification.json`, `events.jsonl`, `incidents.json`, `retrieval.jsonl`, `registrations.json`, `metrics.csv`를 확인한다. 실패 PNG와 정확한 MuJoCo 상태는 `failures/`에 있다. `replay_bundle/`에는 실제 모델·상태·입력·충돌 자산·코드 hash가 들어간다. 원 run 없이 이 묶음 경로를 `--run`에 주어 재생할 수 있다. 재생은 저장 상태의 영상화이며 새 물리 시험이 아니다.
 
-현재 저장 상태는 20 Hz, 영상은 그중 실제 프레임을 선택한 5 fps다. 사이 프레임을 보간해 새 동작을 만들지 않는다. 물리 검사는 2 ms 간격으로 별도 수행한다. 주 실행 영상에는 copy/planner 상태가 섞이지 않는다.
+현재 저장 상태는 20 Hz, 영상은 그중 실제 프레임을 선택한 5 fps다. 사이 프레임을 보간해 새 동작을 만들지 않는다. 기준 물리 검사는 2 ms 간격으로 별도 수행한다. 명시적 개발 실험은 기록된 4/10 ms 간격을 따른다. 주 실행 영상에는 copy/planner 상태가 섞이지 않는다.
 
 ## 7. 실제 Astra 복구·지침 재사용의 개발 시험
 
@@ -161,3 +161,40 @@ S0/S1은 단일 역할, R0/R1은 조립·복구 역할 분리다. 0은 검색 �
 ```
 
 첫 실행의 등록은 다음 snapshot부터 검색된다. R1의 `retrieval.jsonl` → `events.jsonl`의 실제 Astra 제안·재검증 → `final_verification.json`을 함께 확인한다. 이 개발 사례를 독립 평가 메모리에 복사하지 않는다. 새로운 실행은 유료이므로 기존 총 승인의 실제 잔액 및 회당 제한 안에서만 수행한다.
+
+
+## 2026-11-26 API 없는 개발 경험 연결 검사
+
+실제 물리 실패→해결→지침 등록의 연결만 검사하려면 `run`에 `--policy scripted --split development --development-learning --memory-root <별도 개발 폴더>`를 명시한다. 기본 공유 메모리·collection·evaluation에서는 이 개발 작성기를 거부한다. 다음 실행에서 같은 별도 폴더와 `--condition R1`을 사용하면 고정 snapshot으로 검색하고 다시 물리 검사한다. 지침은 원 실행에서 실제 사용해 설치까지 확인된 수치만 포함한다. 이것을 Astra 생성 경험이나 학습 효과 실험으로 집계하지 않는다.
+
+UI는 설치 개수, 주 실행/복사 검사, 단계, 판단 출처와 등록 개수를 요약한다. `memory_use.json`과 `continuations.jsonl`, `checkpoints/`, `result.json`의 `experience_summary`와 `next_step`으로 실제 사용·중단·재개 근거를 확인한다. 배터리 재시험 전 공통 실행 명령과 실제 결과는 [STEP 48](STEP_48_PROTOTYPE_VALIDATION.md)에 있다.
+
+
+### API 키를 파일에 저장하지 않고 UI 시작
+
+```powershell
+powershell -NoProfile -File .\scripts\start_assembly_ui.ps1 -Port 8765
+```
+
+숨김 입력으로 키를 받고 해당 UI 프로세스와 실행 자식에만 전달한다. 값은 명령줄·로그·디스크·전역 환경에 저장하지 않는다. API 없이 쓰려면 `-WithoutApi`를 붙인다. 이 명령은 UI만 열며 실행을 시작하거나 새 비용을 승인하지 않는다. 주소는 http://127.0.0.1:8765 이다.
+
+
+STEP 변환은 native Python 3.8과 별도의 Python 3.10/OCP를 쓴다. 현재 조립용 사본의 `.runtime/ocp`는 F:의 조립 전용 라이브러리 복사본에 연결돼 있다. 코드 저장소 복제만으로 이 로컬 자산까지 설치되는 것은 아니다. 기존 라이브러리 출처·해시와 실제 단일 STEP 준비 결과는 [STEP 51](STEP_51_STEP_INPUT_READY.md)을 확인한다.
+
+
+### 최신 실제 UI 시범의 한계
+
+STEP 53의 805초 실행 한도는 두 번째 부품 사전검사 관찰 중 소진됐다. 주 장면 1/2와 API 없는 별도 복사 관찰 통과를 전체 성공으로 합치지 않는다. 안정성 관찰이 시간/취소/측정 오류로 중단되면 완료 미확정으로 남기고, 기록된 실제 기준 위반은 보존한다. 종료 후 영상·bundle 저장 시간은 실행 한도에 추가될 수 있어 보고서의 `pipeline_seconds`와 실행 한도를 구분한다. 다음 새 전체 시험 계획은 최대 $1.50·1,200초이며, 실행하기 전 기존 총 예산 잔액을 확인한다. 이미 열린 UI 서버는 종료하지 말고 유지한다.
+
+## 물리 계산 간격 선택 · 개발 실험
+
+`prepare`와 `run`에서 `--physics-timestep 0.002`, `0.004`, `0.01`을 지정한다. 새 원본 입력은 기본 0.002초이고 준비된 입력은 저장된 프로파일을 따른다. 이 옵션은 새 초기 장면을 위한 것이며 실행 중간 상태의 간격 변경/이어가기를 허용하지 않는다. 손가락 동작의 실제 초 단위 시간은 유지한다.
+
+0.004초는 1초/251개, 0.01초는 1초/101개 관측이며 기존 허용 오차·접촉 기준을 그대로 적용한다. 별도 프로파일 해시와 `validation_regime`으로 결과·검색·audit를 구분한다. 더 큰 간격은 development 전용이며 collection/evaluation에서 거부한다. 현재 0.01초 새 장면 시작은 그리퍼 관절 검사에서 실패했다. 0.004초의 API 없는 2/2 성공과 정확한 실행 명령은 [STEP 54](STEP_54_TIMESTEP_VARIANTS.md)에 있다.
+
+새 UI 선택 항목은 서버를 다음에 재시작할 때 표시된다. 기존 키가 들어 있는 서버는 이번 작업에서 종료하지 않았다. 현재 작업이 없을 때 `scripts/start_assembly_ui.ps1`로 재시작하면 숨김 키 입력부터 다시 진행한다. 이번에 저장한 결과·영상 열기는 새 API나 물리 실행을 발생시키지 않는다.
+
+
+### 배터리 0.004초 Astra 실제 결과
+
+수정 준비본은 `F:/dev/llm-robot-assembly-data/research/20261126_battery_4ms/support_fixed/prepared.json`이다. 기존 키가 들어 있는 UI에서 준비본 경로를 사용할 수 있다. 최신 결과는 첫 부품 두 파지안이 사전검사에서 실패한 0/12이며 전체 조립 성공이 아니다. 비용·남은 설정·실패 이미지·보고서 열기 절차는 [STEP 55](STEP_55_BATTERY_4MS_ASTRA.md)에 있다. 실행 중 쓰던 남은 회차 예산을 다음 시도의 신규 승인으로 간주하지 않는다.

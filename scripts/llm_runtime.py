@@ -46,8 +46,12 @@ class LlmConfig:
             raise ValueError('Invalid model identifier.')
         if not isinstance(self.api_key_env, str) or not re.fullmatch(r'[A-Z][A-Z0-9_]{1,80}', self.api_key_env):
             raise ValueError('Invalid API key environment-variable name.')
-        for name, maximum in (('max_model_requests', 100), ('max_input_tokens', 32000),
-                              ('max_output_tokens', 16000), ('max_total_tokens', 1000000)):
+        # Long CAD assemblies retain shared history across both roles. These
+        # are host caps, not a claim about a provider's model context size.
+        # Actual requests remain counted and cost-reserved before generation.
+        long_assembly = self.model == 'gpt-6-astra' and self.reasoning_effort == 'high'
+        for name, maximum in (('max_model_requests', 100), ('max_input_tokens', 100000 if long_assembly else 32000),
+                              ('max_output_tokens', 16000), ('max_total_tokens', 2000000 if long_assembly else 1000000)):
             value = getattr(self, name)
             if type(value) is not int or not 1 <= value <= maximum:
                 raise ValueError('Invalid token/request limit: ' + name)

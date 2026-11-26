@@ -177,7 +177,7 @@ def build_workcell_spec(config):
     return spec
 
 
-def compile_workcell(spec, *, free_part_count=1):
+def compile_workcell(spec, *, free_part_count=1, tcp_extension_m=0.):
     """Compile the robot and one free product part after optional fixed-fixture additions."""
     if type(free_part_count) is not int or free_part_count < 0:
         raise ValueError('Expected a nonnegative number of explicitly declared free product parts.')
@@ -191,7 +191,7 @@ def compile_workcell(spec, *, free_part_count=1):
         raise ValueError("Expected the original robot/gripper and the declared unactuated free bodies.")
     if tuple(model.joint(i).name for i in range(6)) != JOINT_NAMES:
         raise ValueError("Arm joint ordering changed.")
-    check_tcp_frame(model, data)
+    check_tcp_frame(model, data, tcp_extension_m=tcp_extension_m)
     return model, data
 
 

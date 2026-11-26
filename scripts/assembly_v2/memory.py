@@ -13,6 +13,7 @@ from .completion import valid_evidence
 from .artifacts import events,verify_bundle
 from .budget import Budget
 from .media import CAMERA_VERSION
+from .motion_plan import SCHEMA as MOTION_PLAN_SCHEMA,validate as validate_motion_plan
 
 ROOT=Path(__file__).resolve().parents[2]
 from .storage import memory_root
@@ -81,9 +82,10 @@ def guidance_schema(incident=None):
     parameter={'type':'object','properties':{'name':{'type':'string','enum':['position_mm','quaternion_xyzw','opening_width_mm']},
        'unit':{'type':'string','enum':['mm','xyzw']},'value':{'type':'array','items':{'type':'number'},'minItems':1,'maxItems':4},
        'event_id':{'type':'string'}},'required':['name','unit','value','event_id'],'additionalProperties':False}
-    properties={'summary':{'type':['string','null'],'maxLength':700},'action':{'type':['string','null'],'enum':['pick','insert','recover_alignment','replan_insert',None]},
+    properties={'summary':{'type':['string','null'],'maxLength':700},'action':{'type':['string','null'],'enum':['pick','lift','insert','recover_alignment','replan_insert','finish_release',None]},
        'parameters':{'type':'array','items':parameter},'evidence_refs':{'type':'array','items':{'type':'string'}},
        'checks':{'type':'array','items':{'type':'string','enum':['current_geometry','grasp_copy','installation_copy','main_completion_window']}}}
+    properties['motion_plan']={'type':['object','null'],'properties':{'event_id':{'type':'string'},'parameters':MOTION_PLAN_SCHEMA},'required':['event_id','parameters'],'additionalProperties':False}
     if incident is not None:
         # IDs are copied from measured events; check/action IDs are not event
         # citations. Let structured generation enforce this before validation.
@@ -96,15 +98,16 @@ def guidance_schema(incident=None):
     return {'type':'object','properties':properties,'required':list(properties),'additionalProperties':False}
 
 def validate_guidance(card,incident):
-    if not isinstance(card,dict) or set(card)!=set(guidance_schema()['properties']):raise ValueError('Invalid machine guidance schema.')
-    if card['summary'] is None and card['action'] is None and not card['parameters'] and not card['evidence_refs']:return False
+    expected=set(guidance_schema()['properties'])
+    if not isinstance(card,dict) or set(card) not in (expected,expected-{'motion_plan'}):raise ValueError('Invalid machine guidance schema.')
+    if card['summary'] is None and card['action'] is None and not card['parameters'] and not card['evidence_refs'] and card.get('motion_plan') is None:return False
     if not isinstance(card['summary'],str) or not 1<=len(card['summary'])<=700:raise ValueError('Invalid concise guidance.')
     facts={e['id']:e for e in incident['events']};refs=card['evidence_refs']
     if not refs or not set(refs)<=set(facts) or incident['installation_evidence'] not in refs or not any(facts[k].get('failure') for k in refs):
         raise ValueError('Guidance requires original failure and main installation evidence.')
     action=card['action']
     successful=[e for e in facts.values() if e['executed'] and not e.get('failure') and e['proposal']['skill']==action]
-    if action not in ('pick','insert','recover_alignment','replan_insert') or not successful:raise ValueError('Guidance action was not actually executed successfully.')
+    if action not in ('pick','lift','insert','recover_alignment','replan_insert','finish_release') or not successful:raise ValueError('Guidance action was not actually executed successfully.')
     if not {'current_geometry','grasp_copy','installation_copy','main_completion_window'}<=set(card['checks']):raise ValueError('Required revalidation missing.')
     for p in card['parameters']:
         if set(p)!={'name','unit','value','event_id'} or p['event_id'] not in refs:raise ValueError('Unlinked parameter evidence.')
@@ -113,6 +116,12 @@ def validate_guidance(card,incident):
         actual=event.get('resolved_grasp',{}).get(p['name'])
         unit='xyzw' if p['name']=='quaternion_xyzw' else 'mm'
         if actual is None or p['unit']!=unit or not np.array_equal(np.atleast_1d(actual),p['value']):raise ValueError('Unobserved parameter/value/unit.')
+    saved_plan=card.get('motion_plan')
+    if saved_plan is not None:
+        if not isinstance(saved_plan,dict) or set(saved_plan)!={'event_id','parameters'} or saved_plan['event_id'] not in refs:raise ValueError('Unlinked motion-plan evidence.')
+        event=facts[saved_plan['event_id']]
+        if event not in successful or saved_plan['parameters'] is None or event.get('resolved_motion_plan')!=saved_plan['parameters']:raise ValueError('Motion plan was not executed successfully by the cited action.')
+        validate_motion_plan(saved_plan['parameters'])
     if action=='pick' and {p['name'] for p in card['parameters']}!={'position_mm','quaternion_xyzw','opening_width_mm'}:
         raise ValueError('A grasp guidance example must cite its full applied pose and opening.')
     return True

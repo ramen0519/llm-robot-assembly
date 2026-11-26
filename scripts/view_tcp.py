@@ -29,13 +29,15 @@ def read_tcp_pose(data):
     return site.xpos.copy(), site.xmat.reshape(3, 3).copy()
 
 
-def check_tcp_frame(model, data):
+def check_tcp_frame(model, data, *, tcp_extension_m=0.):
     """Check this model's nominal definition, not physical tool calibration."""
+    if not math.isfinite(tcp_extension_m) or not 0<=tcp_extension_m<=.075:
+        raise ValueError("Unsupported TCP extension.")
     mount_error(model, data)
     site = model.site(TCP_SITE_NAME)
     if model.body(int(model.site_bodyid[site.id])).name != "gripper_base":
         raise ValueError("TCP must be fixed to gripper_base, not a moving finger.")
-    if not np.allclose(site.pos, [0.0, 0.0, 0.145], atol=1e-10, rtol=0):
+    if not np.allclose(site.pos, [0.0, 0.0, 0.145+tcp_extension_m], atol=1e-10, rtol=0):
         raise ValueError("Expected the upstream pinch offset [0, 0, 0.145] m.")
     # MuJoCo stores local quaternions as wxyz. Both signs describe the same rotation.
     if not (math.isclose(abs(float(site.quat[0])), 1.0, abs_tol=1e-10, rel_tol=0)
@@ -50,7 +52,7 @@ def check_tcp_frame(model, data):
     relative_position = wrist_rotation.T @ (position - wrist.xpos)
     relative_rotation = wrist_rotation.T @ rotation
     report = {
-        "attachment_position_error_m": float(np.linalg.norm(relative_position - ATTACHMENT_TO_TCP_M)),
+        "attachment_position_error_m": float(np.linalg.norm(relative_position - (ATTACHMENT_TO_TCP_M + [0,0,tcp_extension_m]))),
         "attachment_rotation_error": float(np.max(np.abs(relative_rotation - ATTACHMENT_TO_TCP_ROTATION))),
         "orthogonality_error": float(np.max(np.abs(rotation.T @ rotation - np.eye(3)))),
         "determinant_error": abs(float(np.linalg.det(rotation)) - 1.0),

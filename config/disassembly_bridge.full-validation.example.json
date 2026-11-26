@@ -7,5 +7,11 @@
   "max_stability": 64,
   "max_poses": 3,
   "seconds": 900,
-  "usage": "Optional extended offline validation. No API; only run with the larger time budget explicitly authorized."
+  "usage": "Optional extended offline validation. No API; only run with the larger time budget explicitly authorized.",
+  "distribution": "ASAP-Ubuntu",
+  "namespace_fallback": {
+    "enabled": true,
+    "systemd_pid": 2,
+    "note": "Opt-in host transport for this lab WSL installation. Guard systemd identity, same Python, RedMax import and native entry SHA. Does not restart guest or stop other work."
+  }
 }

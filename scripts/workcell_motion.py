@@ -48,8 +48,20 @@ class WorkcellMotion:
         self.held_pose = None
         self.dt = float(model.opt.timestep)
         if not 0 < self.dt <= 0.002:
-            raise ValueError("Workcell execution requires timestep <= 0.002 s.")
+            # Larger intervals are an explicit v2 development profile, not a silent guard bypass.
+            from assembly_v2.completion import profile_for_timestep
+            declared=getattr(verifier,'prepared',{}).get('completion_profile')
+            if declared!=profile_for_timestep(self.dt):
+                raise ValueError('A larger timestep requires its matching experimental completion profile.')
         self.plans = []
+        timing=getattr(verifier,'prepared',{}).get('profile',{}).get('motion_timing',{})
+        self.reference_joint_speed=float(timing.get('reference_joint_speed_rad_s',math.radians(5)))
+        self.reference_tcp_speed=float(timing.get('reference_tcp_speed_m_s',.025))
+        self.minimum_segment=float(timing.get('minimum_segment_s',3.))
+        if (not all(math.isfinite(x) for x in (self.reference_joint_speed,self.reference_tcp_speed,self.minimum_segment))
+                or not 0<self.reference_joint_speed<=math.radians(10)
+                or not 0<self.reference_tcp_speed<=.05 or not 1<=self.minimum_segment<=10):
+            raise ValueError('Motion timing outside tested bounded reference limits.')
 
     def _candidate(self, qpos, allow_support, allow_grasp):
         if self.budget: self.budget.check('motion_candidate')
@@ -144,7 +156,7 @@ class WorkcellMotion:
         knots = np.asarray(knots)
         # Uniform knot parameter + smoothstep time scaling, bounded reference speed.
         max_derivative = intervals * float(np.max(np.abs(np.diff(knots, axis=0))))
-        duration = max(3., 1.5 * distance / 0.025, 1.5 * max_derivative / math.radians(5))
+        duration = max(self.minimum_segment, 1.5 * distance / self.reference_tcp_speed, 1.5 * max_derivative / self.reference_joint_speed)
         return CartesianPlan(self.data.qpos.copy(), float(self.data.time), knots, p.copy(), r.copy(), duration, checked,
                              self.data.qvel.copy(), self.data.ctrl.copy(), self.data.mocap_pos.copy(), self.data.mocap_quat.copy())
 

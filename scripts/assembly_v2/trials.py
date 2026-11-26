@@ -10,7 +10,9 @@ from .artifacts import inventory
 from .memory import Library,source_identity
 
 def plan_trials(manifest,output,snapshot=None):
-    source=read(manifest);cfg=source['shared_run_config'];rows=[];lineages=set();splits={}
+    source=read(manifest);cfg=dict(source['shared_run_config']);rows=[];lineages=set();splits={}
+    cfg.setdefault('motion_plan_mode','bounded')
+    if cfg['motion_plan_mode'] not in ('fixed','bounded'):raise ValueError('Unknown shared motion plan mode.')
     if cfg['policy']!='astra':raise ValueError('Research trials require actual Astra; scripted runs are development only.')
     config=load_llm_config(cfg['llm_config']).validate(live=True)
     if config.model!='gpt-6-astra' or config.reasoning_effort!='high':raise ValueError('Approved model/effort required.')
@@ -29,7 +31,7 @@ def plan_trials(manifest,output,snapshot=None):
         else:conditions=[case.get('condition','R0')]
         for condition in conditions:
             if condition not in CONDITIONS or case['split']=='collection' and CONDITIONS[condition][1]:raise ValueError('Collection retrieval must be off.')
-            rows.append({**case,'condition':condition,'prepared_sha256':digest(p),'prepared_file_sha256':sha(case['prepared']),
+            rows.append({**case,'condition':condition,'motion_plan_mode':cfg['motion_plan_mode'],'prepared_sha256':digest(p),'prepared_file_sha256':sha(case['prepared']),
                'source_identity':identity,'snapshot_id':snapshot['id'] if snapshot else None,'runtime':inventory(p)})
     result={'schema':'assembly_trials/v2.0','cases':rows,'memory_snapshot':snapshot,'shared_run_config':cfg,
        'memory_root':source['memory_root'],'llm_config_sha256':sha(cfg['llm_config']),
@@ -78,7 +80,7 @@ def execute_trials(manifest,output,max_runs,*,split,paid_budget=None,continue_ma
             folder=output/f'{index:03d}_{row["condition"]}';batch['started']+=1
             result=run(read(row['prepared']),folder,condition=row['condition'],policy_kind='astra',llm_config=cfg['llm_config'],
                  memory_root=doc['memory_root'],snapshot=doc['memory_snapshot'],encoder_path=cfg.get('encoder'),seconds=cfg['seconds'],
-                 split=split,lineage_id=row['lineage_id'],plan=row if split=='evaluation' else None)
+                 split=split,lineage_id=row['lineage_id'],plan=row if split=='evaluation' else None,motion_plan_mode=cfg.get('motion_plan_mode','bounded'))
             usage=result.get('usage',{});batch['api_calls']+=result['api_calls']
             batch['tokens']+=usage.get('known_input_tokens',0)+usage.get('known_output_tokens',0)+usage.get('unknown_usage_requests',0)*(llm.max_input_tokens+llm.max_output_tokens)
             batch['cost_usd']+=usage.get('known_api_cost_estimate_usd',0)+usage.get('unresolved_cost_reserve_usd',0)

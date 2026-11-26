@@ -11,6 +11,7 @@ import zipfile
 from assembly_v12.contracts import InputError,location,read,write,import_export,digest
 from .budget import Budget
 from .preparation import prepare,geometric_priority,PROFILE
+from .order_hint import SCHEMA as HINT_SCHEMA, import_hint
 from .artifacts import report,audit,counters
 from .storage import run_root,memory_root
 
@@ -22,13 +23,8 @@ def linux_path(path):
     return '/mnt/'+p.drive[0].lower()+'/'+p.as_posix()[3:]
 
 def bridge(source,folder,config_path,budget,*,unit=None,assembled=False,base=None,profile=None):
-    config=read(config_path);windows=os.name=='nt' and config['python'].startswith('/')
-    translate=linux_path if windows else lambda x:str(location(x))
-    command=(['wsl.exe','-d',config.get('distribution','ASAP-Ubuntu'),'--'] if windows else [])
-    if windows:
-        # Fail quickly for an unavailable guest instead of hanging preparation.
-        budget.process(command+['/bin/echo','assembly_bridge_ready'],timeout=10,capture_output=True)
-    elif not Path(config['python']).is_file():raise InputError('bridge_unavailable','Configured native Python is missing.')
+    from .native_bridge import connect,native_process
+    config,command,translate=connect(config_path,folder,budget)
     common=[config['python'],'-B',config['repository']+'/tools/run_disassembly.py','--input',translate(source),
         '--assembly',folder.name,'--family',folder.name,'--asap-root',config['asap_root'],
         '--store',translate(folder/'disassembly_memory'),'--memory-off','--max-attempts',str(config['max_attempts']),
@@ -39,14 +35,14 @@ def bridge(source,folder,config_path,budget,*,unit=None,assembled=False,base=Non
     if base:common+=['--base',base]
     started=time.monotonic()
     with (folder/'geometry_process.log').open('w',encoding='utf8') as log:
-        proc=budget.process(command+common+['--run',translate(folder/'disassembly_geometry'),'--mode','prepare'],timeout=60,stdout=log,stderr=subprocess.STDOUT)
+        proc=native_process(command,common+['--run',translate(folder/'disassembly_geometry'),'--mode','prepare'],budget,timeout=60,stdout=log,stderr=subprocess.STDOUT)
     if proc.returncode:raise InputError('input_invalid','Native CAD normalization failed; inspect geometry_process.log.')
     priority=geometric_priority(folder/'disassembly_geometry/input',profile,base)
     write(folder/'disassembly_priority.json',priority)
-    args=command+common+['--run',translate(folder/'disassembly'),'--mode','fixture','--fixture-order',*priority['ranking']]
+    args=common+['--run',translate(folder/'disassembly'),'--mode','fixture','--fixture-order',*priority['ranking']]
     if not base:args+=['--base',priority['fixed_base']]
     with (folder/'disassembly_process.log').open('w',encoding='utf8') as log:
-        proc=budget.process(args,timeout=config['seconds']+15,stdout=log,stderr=subprocess.STDOUT)
+        proc=native_process(command,args,budget,timeout=config['seconds']+15,stdout=log,stderr=subprocess.STDOUT)
     write(folder/'disassembly_cost.json',{'policy':'native_fixture_physics_not_Astra','api_calls':0,'wall_seconds':time.monotonic()-started,'returncode':proc.returncode})
     export=folder/'disassembly/export_v1.json'
     if proc.returncode or not export.is_file():raise InputError('disassembly_failed','No complete native verified chain export.')
@@ -58,12 +54,20 @@ def pipeline(args):
     budget=Budget(args.seconds,cancelled=lambda:(out/'cancel.request').exists());prepared=None;started=time.monotonic()
     try:
         source=location(args.input);export=source/'export_v1.json' if source.is_dir() and (source/'export_v1.json').exists() else source
+        if export.is_dir() and (export/'assembly_hint.json').is_file():
+            export=export/'assembly_hint.json'
         schema=read(export).get('schema') if export.is_file() and export.suffix.lower()=='.json' else None
         if schema=='prepared_assembly/v2.0':
             prepared=read(export)
-            # Recheck original imported native proof and all source/current mesh semantics.
-            from .validation import check_prepared
-            check_prepared(prepared,budget)
+            # Preparation-only has no executor. A run is checked by execution.run
+            # immediately before physics/API use, including callers outside CLI.
+            # Do not perform the same expensive mesh/adjacency check twice.
+            if args.command=='prepare':
+                from .validation import check_prepared
+                check_prepared(prepared,budget)
+        elif schema == HINT_SCHEMA:
+            hint = import_hint(export, out/'input', budget)
+            prepared = prepare(hint.parent, out, args.profile, budget, input_name=hint.name)
         else:
             native_zip=False
             if export.is_file() and export.suffix.lower()=='.zip':
@@ -71,6 +75,9 @@ def pipeline(args):
             if schema!='disassembly_export/v1' and not native_zip:
                 export=bridge(source,out,args.bridge_config,budget,unit=args.unit,assembled=args.assembled_obj,base=args.base,profile=args.profile)
             import_export(export,out/'input');prepared=prepare(out/'input',out,args.profile,budget)
+        if getattr(args,'physics_timestep',None) is not None:
+            from .completion import with_timestep
+            prepared=with_timestep(prepared,args.physics_timestep)
         if args.command=='prepare':
             result={'schema':'assembly_result/v2.0','status':'prepared_geometry','policy_source':'not_run','required':prepared['order'],
                     'installed':[],'physics':'not_run','reference_status':'not_run','api_calls':0,'metrics':counters([]),
@@ -87,7 +94,7 @@ def pipeline(args):
             result=run(prepared,out,condition=args.condition,policy_kind=args.policy,llm_config=args.llm_config,
                memory_root=args.memory_root,snapshot=snapshot,encoder_path=args.encoder,seconds=args.seconds,budget=budget,
                split=args.split,lineage_id=args.lineage,plan=plan,first_grasp=read(args.first_grasp) if args.first_grasp else None,approach=args.approach,
-               failure_probe=read(args.development_failure_probe) if args.development_failure_probe else None)
+               failure_probe=read(args.development_failure_probe) if args.development_failure_probe else None,motion_plan_mode=getattr(args,'motion_plan_mode','bounded'),development_learning=getattr(args,'development_learning',False))
     except Exception as exc:
         import traceback
         result={'schema':'assembly_result/v2.0','status':getattr(exc,'status','not_run' if isinstance(exc,subprocess.TimeoutExpired) else 'preparation_failed'),
@@ -109,13 +116,22 @@ def main(argv=None):
         p.add_argument('--profile',default=str(PROFILE));p.add_argument('--bridge-config',default=str(ROOT/'config/disassembly_bridge.wsl.example.json'))
         p.add_argument('--unit',choices=['m','cm','mm','inch']);p.add_argument('--assembled-obj',action='store_true');p.add_argument('--base')
         p.add_argument('--seconds',type=float,default=300)
+        p.add_argument('--physics-timestep',type=float,choices=[.002,.004,.010],default=None,help='Explicit numerical variant; larger than .002 is development only, with unchanged thresholds and a 1-second window.')
         if name=='run':
             p.add_argument('--policy',choices=['astra','scripted'],default='astra');p.add_argument('--condition',choices=['S0','S1','R0','R1'],default='R0')
             p.add_argument('--llm-config',default=str(ROOT/'config/llm.astra-high.toml'));p.add_argument('--memory-root',default=str(memory_root()))
             p.add_argument('--encoder',default=str(ROOT/'runtime/assets/dinov2-small'));p.add_argument('--snapshot');p.add_argument('--plan')
             p.add_argument('--split',choices=['development','collection','evaluation'],default='development');p.add_argument('--lineage')
+            p.add_argument('--motion-plan-mode',choices=['fixed','bounded'],default='bounded')
+            p.add_argument('--development-learning',action='store_true',help='Scripted evidence cards; development only, explicit isolated --memory-root required.')
             p.add_argument('--first-grasp');p.add_argument('--approach',choices=['top','side','oblique'])
             p.add_argument('--development-failure-probe',help='Explicit copy-only failure probe before Astra recovery; development only, never natural-failure research data.')
+    p=sub.add_parser('continue-development',help='API-free continuation from a verified empty-hand boundary; does not reset an API budget.')
+    p.add_argument('--from-run',required=True);p.add_argument('--output',required=True)
+    p.add_argument('--seconds',type=float,default=None,help='Optional global limit; omitted means run until physical outcome or explicit cancellation.')
+    p=sub.add_parser('check-bridge');p.add_argument('--output',required=True);p.add_argument('--seconds',type=float,default=30)
+    p.add_argument('--bridge-config',default=str(ROOT/'config/disassembly_bridge.wsl.example.json'))
+    p=sub.add_parser('register-assets');p.add_argument('--prepared',required=True);p.add_argument('--output',required=True);p.add_argument('--seconds',type=float,default=1800)
     p=sub.add_parser('ui');p.add_argument('--port',type=int,default=8765)
     p=sub.add_parser('status')
     for name in ('audit','report','replay'):
@@ -126,9 +142,27 @@ def main(argv=None):
         p=sub.add_parser(name);p.add_argument('--manifest',required=True);p.add_argument('--output',required=True)
         p.add_argument('--max-runs',type=int,default=5);p.add_argument('--paid-budget');p.add_argument('--continue-main',action='store_true')
     a=ap.parse_args(argv)
+    if a.command=='continue-development':
+        if a.seconds is not None and not 1<=a.seconds<=3600:ap.error('Optional finite limit must be 1-3600 seconds.')
+        from .resume import continue_development
+        r=continue_development(location(a.from_run),location(a.output),seconds=a.seconds)
+        print(str(location(a.output)/'report.html'),r['status'],flush=True)
+        return 0 if r['status']=='physical_success' else 2
     if a.command in ('prepare','run'):
-        if not 1<=a.seconds<=1800:ap.error('Use a declared 1–1800 second run limit.')
+        if not 1<=a.seconds<=3600:ap.error('Use a declared 1–3600 second run limit.')
         result,_=pipeline(a);return 0 if result['status'] in ('physical_success','no_work','prepared_geometry') else 2
+    if a.command=='check-bridge':
+        if not 1<=a.seconds<=60:ap.error('Use a declared 1-60 second bridge check.')
+        from .native_bridge import connect
+        out=location(a.output);out.mkdir(parents=True,exist_ok=False)
+        try:connect(a.bridge_config,out,Budget(a.seconds))
+        except Exception as exc:
+            print('bridge_unavailable:',type(exc).__name__,str(out/'bridge_health.json'));return 2
+        print('bridge_ready:',str(out/'bridge_health.json'));return 0
+    if a.command=='register-assets':
+        if not 1<=a.seconds<=1800:ap.error('Use a declared 1-1800 second import limit.')
+        from .asset_cache import register_prepared
+        r=register_prepared(a.prepared,a.output,Budget(a.seconds));return 0 if r['status']=='passed' else 2
     if a.command=='ui':
         from .ui import serve
         serve(a.port);return 0

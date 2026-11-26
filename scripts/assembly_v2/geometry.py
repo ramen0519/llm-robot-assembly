@@ -39,7 +39,13 @@ def closest_distance(mesh,points):
     return distance/1000.
 
 def geometry_matches(source,native,tolerance=2e-6):
-    # Topology/vertex order need not match, but both placed surfaces must match.
+    # Identical indexed triangles prove the same entire surface (including
+    # tiny details); avoid redundant sampled proximity tests after OBJ export.
+    if (source.vertices.shape == native.vertices.shape and
+        np.array_equal(source.faces, native.faces) and
+        np.max(np.abs(source.vertices-native.vertices), initial=0.) <= 1e-12):
+        return True
+    # Different topology/order still requires the original surface/volume checks.
     return (np.max(np.abs(source.bounds-native.bounds))<=tolerance and
             abs(source.volume-native.volume)<=max(1e-12,source.volume*1e-4) and
             max(surface_distance(source,native,1024),surface_distance(native,source,1024,1))<=tolerance)
@@ -91,26 +97,99 @@ def quality(original,hulls,settings):
             'method':'original_surface_coverage_exterior_union_error_winding_void_probes/v2',
             'limits':'Finite geometric sampling, not a continuous Hausdorff proof; actual assembled and path contact tests are also required.'}
 
-def extrusion_hulls(m):
-    """Exact cap-triangle prisms when the surface proves a constant extrusion.
+def extrusion_hulls(m, max_hulls=None):
+    """Build cap prisms when two planar caps and parallel side walls prove an extrusion."""
+    normals = m.face_normals
+    first = normals[int(np.argmax(m.area_faces))]
+    crosses = np.cross(normals, first)
+    lengths = np.linalg.norm(crosses, axis=1)
+    j = int(np.argmax(lengths))
+    if lengths[j] < 1e-8:
+        raise ValueError('No non-parallel faces on the closed solid.')
+    # Any extrusion axis is parallel to one of two non-parallel face normals,
+    # or perpendicular to both if both faces are on the sides.
+    candidates = []
+    for axis in (first, normals[j], crosses[j]/lengths[j]):
+        alignment = np.abs(normals @ axis)
+        if np.any(np.minimum(alignment, 1-alignment) > 1e-7):
+            continue
+        heights = m.vertices @ axis
+        low, high = float(heights.min()), float(heights.max())
+        if high-low < 1e-6:
+            continue
+        surfaces = heights[m.faces]
+        lower = np.max(np.abs(surfaces-low),axis=1) < 1e-8
+        upper = np.max(np.abs(surfaces-high),axis=1) < 1e-8
+        caps = lower | upper
+        if (not lower.any() or not upper.any() or np.any(alignment[caps] < 1-1e-8)
+                or np.any(alignment[~caps] > 1e-7)):
+            continue
+        tolerance = max(1e-12, m.volume*1e-6)
+        for mask, shift in ((upper, (low-high)*axis), (lower, (high-low)*axis)):
+            size = int(mask.sum())
+            if max_hulls is not None and size > max_hulls:
+                continue
+            if abs(m.area_faces[mask].sum()*(high-low) - m.volume) <= tolerance:
+                candidates.append((size, mask, shift))
+    for _, mask, shift in sorted(candidates, key=lambda row:row[0]):
+        hulls = []
+        for cap in m.triangles[mask]:
+            hulls.append(decomposition_hull(np.concatenate((cap, cap+shift))))
+        if abs(sum(h.volume for h in hulls)-m.volume) <= max(1e-12,m.volume*1e-6):
+            return hulls
+    raise ValueError('No verified constant extrusion within the collision geometry budget.')
 
-    This is a geometric optimization, not a cylinder/box/product classifier.
-    The union is still subjected to all original-surface/hole quality checks.
-    """
-    axes=[]
-    for normal in m.face_normals:
-        if not any(abs(float(np.dot(normal,a)))>1-1e-8 for a in axes):axes.append(normal)
-    for axis in axes:
-        heights=m.vertices@axis;low,high=heights.min(),heights.max()
-        if high-low<1e-6 or np.any(np.minimum(abs(heights-low),abs(heights-high))>1e-8):continue
-        faces=m.faces[np.all(abs(heights[m.faces]-high)<1e-8,axis=1)]
-        if not len(faces):continue
-        result=[]
-        for face in faces:
-            top=m.vertices[face];bottom=top-axis*(high-low)
-            result.append(trimesh.convex.convex_hull(np.concatenate([top,bottom])))
-        if abs(sum(h.volume for h in result)-m.volume)<=max(1e-12,m.volume*1e-6):return result
-    raise ValueError('No verified constant extrusion.')
+def merge_occupied_cells(cells):
+    """Partition occupied grid cells into disjoint cuboids without bridging empty cells."""
+    axes=cells['axes']
+    remaining=cells['occupied'].copy()
+    boxes=[]
+    for start in np.argwhere(remaining):
+        point=tuple(start)
+        if not remaining[point]:
+            continue
+        end=start.copy()+1
+        for axis in (0, 1, 2):
+            while end[axis] < remaining.shape[axis]:
+                face=[slice(int(start[i]),int(end[i])) for i in range(3)]
+                face[axis]=int(end[axis])
+                if not np.all(remaining[tuple(face)]):
+                    break
+                end[axis]+=1
+        block=tuple(slice(int(start[i]),int(end[i])) for i in range(3))
+        remaining[block]=False
+        lo=np.array([axes[i][start[i]] for i in range(3)])
+        hi=np.array([axes[i][end[i]] for i in range(3)])
+        boxes.append({'size':hi-lo, 'center':(lo+hi)/2})
+    return boxes
+
+def decomposition_hull(vertices, faces=None):
+    from scipy.spatial import ConvexHull, QhullError
+
+    try:
+        hull = (trimesh.convex.convex_hull(vertices) if faces is None else
+                trimesh.Trimesh(vertices, faces, process=True).convex_hull)
+        if hull.is_volume:
+            return hull
+    except (ValueError, QhullError):
+        pass
+
+    # Work on the original CoACD vertices. Absolute triangle tolerances can
+    # drop a small boundary face when the same convex solid is expressed in m.
+    points = np.asarray(vertices, dtype=float)
+    center = points.mean(axis=0)
+    span = float(np.ptp(points, axis=0).max())
+    if not np.isfinite(span) or span <= 0:
+        raise InputError('collision_geometry_invalid', 'Degenerate decomposition piece.')
+    local = (points - center) / span
+    reference = ConvexHull(local)
+    hull = trimesh.convex.convex_hull(local)
+    hull.apply_scale(span)
+    hull.apply_translation(center)
+    if not hull.is_volume or not np.isclose(hull.volume, reference.volume * span**3, rtol=1e-8, atol=0):
+        raise InputError('collision_geometry_invalid', 'Could not retain the closed decomposition piece.')
+    return hull
+
 
 def asset_worker(source,folder,settings):
     folder=Path(folder);folder.mkdir(parents=True,exist_ok=True)
@@ -122,21 +201,25 @@ def asset_worker(source,folder,settings):
         # never a required shape label or a product-name branch.
         try:
             from assembly_v12.preparation import solid_cells
-            cells=solid_cells(m.vertices,m.faces,settings['max_geometry_cells'])
-            hulls=[]
-            for row in cells['boxes']:
-                b=trimesh.creation.box(extents=row['size']);b.apply_translation(row['center']);hulls.append(b)
+            cells=solid_cells(m.vertices,m.faces,settings['max_geometry_cells'],surface_planes_only=True)
+            boxes=cells['boxes']
             algorithm='exact_orthogonal_cells'
+            if len(boxes)>settings['max_hulls_per_body']:
+                boxes=merge_occupied_cells(cells)
+                algorithm='exact_orthogonal_merged_cells'
+            hulls=[]
+            for row in boxes:
+                b=trimesh.creation.box(extents=row['size']);b.apply_translation(row['center']);hulls.append(b)
         except (InputError,ValueError,np.linalg.LinAlgError):
             try:
-                hulls=extrusion_hulls(m);algorithm='verified_cap_triangle_prisms'
+                hulls=extrusion_hulls(m,settings['max_hulls_per_body']);algorithm='verified_cap_triangle_prisms'
             except ValueError:
                 import coacd
                 coacd.set_log_level('error')
                 pieces=coacd.run_coacd(coacd.Mesh(m.vertices,m.faces),threshold=settings['coacd_threshold_m'],
                          real_metric=True,preprocess_mode='off',resolution=2000,mcts_iterations=20,mcts_nodes=10,
                          max_convex_hull=settings['max_hulls_per_body'],seed=settings['seed'],merge=True)
-                hulls=[trimesh.Trimesh(v,f,process=True).convex_hull for v,f in pieces]
+                hulls=[decomposition_hull(v,f) for v,f in pieces]
                 algorithm='coacd_real_metric'
     if not hulls or len(hulls)>settings['max_hulls_per_body']:
         raise InputError('collision_geometry_invalid','Collision hull resource limit exhausted.')
@@ -157,6 +240,10 @@ def asset_worker(source,folder,settings):
     return result
 
 def prepare_asset(source,folder,profile,budget):
+    from .asset_cache import reuse
+    cached = reuse(source,folder,profile,budget)
+    if cached is not None:
+        return cached
     settings={**profile['collision'],**{k:profile['resources'][k] for k in ('max_hulls_per_body','max_geometry_cells')}}
     folder=Path(folder);folder.mkdir(parents=True,exist_ok=True)
     write(folder/'settings.json',settings)

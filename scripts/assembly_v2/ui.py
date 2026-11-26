@@ -25,7 +25,7 @@ def environment_status():
         except importlib.metadata.PackageNotFoundError:packages[name]='not_installed'
     return {'robot':'MuJoCo / UR3e 1대 / Robotiq 2F-85','model':cfg.model,'effort':cfg.reasoning_effort,
       'API_key_present':bool(os.environ.get(cfg.api_key_env)),'per_run_config_cap_usd':cfg.max_cost_usd,
-      'per_run_generation_cap':cfg.max_model_requests,'native_bridge':'requires responsive configured ASAP-Ubuntu; not assumed healthy',
+      'per_run_generation_cap':cfg.max_model_requests,'native_bridge':'checked at preparation; bounded direct WSL / explicitly configured existing-namespace fallback; never auto-restarts guest',
       'encoder_weights_present':(ROOT/'runtime/assets/dinov2-small/model.safetensors').is_file(),'packages':packages,
       'hardware_execution':'disabled; simulator only','output_root':str(run_root()),'memory_root':str(memory_root())}
 
@@ -40,17 +40,39 @@ PAGE='''<!doctype html><html lang="ko"><meta charset="utf-8"><title>조립 프�
 <label>조건 <select name="condition"><option>R0</option><option>R1</option><option>S0</option><option>S1</option></select></label>
 <label>OBJ 단위 <select name="unit"><option value="">원본 메타데이터</option><option>mm</option><option>m</option><option>cm</option><option>inch</option></select></label>
 <label><input name="assembled" type="checkbox">OBJ에 완성 위치 포함</label>
-<label>제한 초 <input name="seconds" type="number" value="300" min="1" max="1800"></label>
+<label>물리 계산 간격 <select name="physics_timestep"><option value="0.002">0.002초 · 기준</option><option value="0.004">0.004초 · 개발 실험</option><option value="0.01">0.01초 · 개발 실험</option></select></label>
+<label>제한 초 <input name="seconds" type="number" value="300" min="1" max="3600"></label>
 <p>R: 조립·복구 역할 분리 / S: 단일 역할 / 0: 검색 끔 / 1: 검색 켬. 이 화면은 개발 실행이며 연구 수집·평가는 동결 manifest CLI를 사용합니다.</p>
 <button>시작</button></form><button id="cancel" disabled>중단 요청</button>
-<h2>현재 진행</h2><pre id="progress">입력을 기다립니다.</pre><div id="links"></div><div id="images"></div><video id="video" controls hidden></video>
+<h2>현재 진행</h2><p id="summary">입력을 기다립니다.</p><details><summary>자세한 진행 기록</summary><pre id="progress"></pre></details><div id="links"></div><div id="images"></div><video id="video" controls hidden></video>
 <h2>최근 실행 결과</h2><p>CLI와 UI에서 실행한 실제 기록입니다. 개발 시험과 연구 수집은 별도로 표시됩니다.</p><button id="refresh">목록 새로고침</button><div id="recent"></div>
 <script>let job=null,csrf=null;const by=id=>document.getElementById(id);fetch('/api/environment').then(r=>r.json()).then(v=>{csrf=v.csrf;by('env').textContent=JSON.stringify(v.environment,null,2)});
-async function recent(){let r=await fetch('/api/recent');let v=await r.json();by('recent').replaceChildren();for(let x of v.runs){let p=document.createElement('p'),a=document.createElement('a');a.href='/results/'+x.token+'/report.html';a.target='_blank';a.textContent=x.run_id+' · '+x.status+' · '+x.policy_source+' · '+x.split;p.appendChild(a);by('recent').appendChild(p)}}by('refresh').onclick=recent;recent();
+async function recent(){let r=await fetch('/api/recent');let v=await r.json();by('recent').replaceChildren();for(let x of v.runs){let p=document.createElement('p'),a=document.createElement('a');a.href='/results/'+x.token+'/report.html';a.target='_blank';a.textContent=x.run_id+' · '+x.status+' · '+x.policy_source+' · '+x.split+(x.physics_timestep_s?' · '+x.physics_timestep_s+'초':'')+(x.validation_regime?.startsWith('experimental_')?' · 개발 실험':'');p.appendChild(a);by('recent').appendChild(p)}}by('refresh').onclick=recent;recent();
 by('form').onsubmit=async e=>{e.preventDefault();let f=new FormData(e.target);f.append('csrf',csrf);let r=await fetch('/api/start',{method:'POST',body:f});let v=await r.json();if(!r.ok){by('progress').textContent=v.error;return}job=v.job;by('cancel').disabled=false;poll()};
 by('cancel').onclick=()=>fetch('/api/cancel/'+job,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({csrf})});
-async function poll(){let r=await fetch('/api/jobs/'+job);let v=await r.json();by('progress').textContent=JSON.stringify(v,null,2);by('images').replaceChildren();for(let n of v.images||[]){let i=document.createElement('img');i.src='/files/'+job+'/'+n;i.alt=n;by('images').appendChild(i)}by('links').replaceChildren();if(v.report){let a=document.createElement('a');a.href='/files/'+job+'/report.html';a.textContent='상세 결과·측정값·검색·로그 열기';a.target='_blank';by('links').appendChild(a)}if(v.video){by('video').hidden=false;by('video').src='/files/'+job+'/'+v.video}if(v.running)setTimeout(poll,2500);else by('cancel').disabled=true;}
+async function poll(){let r=await fetch('/api/jobs/'+job);let v=await r.json();by('progress').textContent=JSON.stringify(v,null,2);let s=v.summary||{};by('summary').textContent=[s.status,'설치 '+s.installed+'/'+s.required,s.decision,s.scene,s.part_id?'부품 '+s.part_id:'',s.phase,'저장된 해결 기록 '+(s.experience?.registered||0)+'건'].filter(Boolean).join(' · ');by('images').replaceChildren();for(let n of v.images||[]){let i=document.createElement('img');i.src='/files/'+job+'/'+n;i.alt=n;by('images').appendChild(i)}by('links').replaceChildren();if(v.report){let a=document.createElement('a');a.href='/files/'+job+'/report.html';a.textContent='상세 결과·측정값·검색·로그 열기';a.target='_blank';by('links').appendChild(a)}if(v.video){by('video').hidden=false;by('video').src='/files/'+job+'/'+v.video}if(v.running)setTimeout(poll,2500);else by('cancel').disabled=true;}
 </script></html>'''
+
+def user_summary(value):
+    result=value.get('result',{});progress=value.get('progress',{})
+    names={'physical_success':'물리 조립 검사 통과','reference_invalid':'완성 목표의 안정성 검사에서 중단',
+        'preparation_failed':'입력 준비 실패','prepared_geometry':'입력·장면 준비 완료',
+        'partial':'일부 부품 설치 후 중단','deadline':'시간 제한으로 중단',
+        'cancelled':'사용자 요청으로 중단','failed':'실패 근거를 저장하고 중단',
+        'not_run':'필요한 설정이 없어 실행하지 않음','initializing':'초기 검사 중','running':'조립 진행 중'}
+    status=result.get('status','running' if value.get('running') else 'not_run')
+    source=result.get('policy_source','not_run')
+    installed=len(result.get('installed',[]));required=len(result.get('required',[]))
+    label=names.get(status,status)
+    if result.get('validation_regime','').startswith('experimental_'):
+        label+=' (개발 실험 '+str(result['physics_timestep_s'])+'초)'
+    return {'status':label,'installed':installed,'required':required,
+        'decision':'실제 Astra 판단' if source.startswith('astra') and result.get('policy_decision_evaluated') else 'Astra 호출·판단 미완료' if source.startswith('astra') and result.get('api_calls',0) else '개발용 규칙 실행' if source=='scripted' else '모델 판단 미실행',
+        'phase':progress.get('phase'),'part_id':progress.get('part_id'),
+        'scene':'주 실행' if progress.get('source')=='live_simulation' else '복사 장면 검사' if progress.get('source')=='mujoco_preflight_copy' else progress.get('source'),
+        'api_calls':result.get('api_calls',0),'experience':result.get('experience_summary',{}),
+        'next_step':result.get('next_step',{}),'error':result.get('error')}
+
 
 def create_app(run_root=RUNS,*,result_roots=None):
     app=Flask(__name__);app.secret_key=secrets.token_bytes(32);app.config.update(MAX_CONTENT_LENGTH=100*1024*1024,SESSION_COOKIE_SAMESITE='Strict',SESSION_COOKIE_HTTPONLY=True)
@@ -88,7 +110,8 @@ def create_app(run_root=RUNS,*,result_roots=None):
         rows=sorted(catalog().items(),key=lambda x:x[1][2],reverse=True)[:30]
         return jsonify(runs=[{'token':token,'run_id':value.get('run_id',path.name),'status':value['status'],
             'policy_source':value.get('policy_source','not_run'),'split':value.get('split','development'),
-            'cost_usd':value.get('usage',{}).get('known_api_cost_estimate_usd',0)} for token,(path,value,_) in rows])
+            'cost_usd':value.get('usage',{}).get('known_api_cost_estimate_usd',0),
+            'physics_timestep_s':value.get('physics_timestep_s'),'validation_regime':value.get('validation_regime')} for token,(path,value,_) in rows])
     @app.get('/results/<token>/<path:name>')
     def previous_result(token,name):
         selected=catalog().get(token)
@@ -102,7 +125,7 @@ def create_app(run_root=RUNS,*,result_roots=None):
             command=request.form.get('command');policy=request.form.get('policy');condition=request.form.get('condition')
             try:
                 seconds=float(request.form.get('seconds','300'))
-                if command not in ('prepare','run') or policy not in ('astra','scripted') or condition not in ('S0','S1','R0','R1') or not 1<=seconds<=1800:raise ValueError('설정 범위를 확인하세요.')
+                if command not in ('prepare','run') or policy not in ('astra','scripted') or condition not in ('S0','S1','R0','R1') or not 1<=seconds<=3600:raise ValueError('설정 범위를 확인하세요.')
                 source=request.form.get('input','').strip();upload=request.files.get('file')
                 if upload and upload.filename:
                     suffix=Path(upload.filename).suffix.lower()
@@ -113,6 +136,10 @@ def create_app(run_root=RUNS,*,result_roots=None):
                 job=uuid.uuid4().hex;out=folder(job)
                 args=[sys.executable,'-B',str(ROOT/'scripts/run_assembly.py'),command,'--input',str(location(source)),'--output',str(out),'--seconds',str(seconds)]
                 if command=='run':args+=['--policy',policy,'--condition',condition]
+                interval=request.form.get('physics_timestep')
+                if interval:
+                    if interval not in ('0.002','0.004','0.01'):raise ValueError('물리 계산 간격을 확인하세요.')
+                    args+=['--physics-timestep',interval]
                 unit=request.form.get('unit')
                 if unit:
                     if unit not in ('mm','cm','m','inch'):raise ValueError('단위를 확인하세요.')
@@ -131,7 +158,7 @@ def create_app(run_root=RUNS,*,result_roots=None):
     @app.get('/api/jobs/<job>')
     def progress(job):
         out=folder(job);p=jobs.get(job);v={'running':p.poll() is None if p else False,'exit_code':p.poll() if p else None}
-        for name in ('result','audit','registrations','media_result'):
+        for name in ('result','progress','audit','registrations','media_result'):
             try:
                 if (out/(name+'.json')).exists():v[name]=read(out/(name+'.json'))
             except (ValueError,OSError):v[name]={'status':'writing'}
@@ -145,6 +172,7 @@ def create_app(run_root=RUNS,*,result_roots=None):
                 except (ValueError,IndexError,OSError):pass
         v['images']=['media/'+n+'.png' for n in ('goal_top','goal_oblique','initial','final') if (out/'media'/(n+'.png')).exists()]
         v['report']=(out/'report.html').exists();v['video']='media/execution.mp4' if (out/'media/execution.mp4').exists() else None
+        v['summary']=user_summary(v)
         return jsonify(v)
     @app.get('/files/<job>/<path:name>')
     def files(job,name):return send_from_directory(folder(job),name)

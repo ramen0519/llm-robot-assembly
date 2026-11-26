@@ -2,8 +2,18 @@
   "python": "/opt/asap-research/envs/asap/bin/python",
   "repository": "/mnt/c/dev/llm-robot-assembly/runtime/integration_disassembly_source",
   "asap_root": "/opt/asap-research/ASAP",
-  "max_attempts": 16, "max_path": 96, "max_stability": 64, "max_poses": 3,
+  "max_attempts": 16,
+  "max_path": 96,
+  "max_stability": 64,
+  "max_poses": 3,
   "seconds": 180,
-  "policy": "fixture_native_physics", "api_calls": 0,
-  "note": "One-time local bridge profile. STEP requires that environment's CAD importer. No paid upstream model."
+  "policy": "fixture_native_physics",
+  "api_calls": 0,
+  "note": "One-time local bridge profile. STEP requires that environment's CAD importer. No paid upstream model.",
+  "distribution": "ASAP-Ubuntu",
+  "namespace_fallback": {
+    "enabled": true,
+    "systemd_pid": 2,
+    "note": "Opt-in host transport for this lab WSL installation. Guard systemd identity, same Python, RedMax import and native entry SHA. Does not restart guest or stop other work."
+  }
 }
